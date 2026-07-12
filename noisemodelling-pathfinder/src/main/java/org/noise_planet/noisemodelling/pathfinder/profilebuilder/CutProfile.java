@@ -161,7 +161,7 @@ public class CutProfile {
                 }
             }
             if(index >= i0) {
-                double segmentLength = current.getCoordinate().distance(cutPoints.get(index + 1).getCoordinate());
+                double segmentLength = JTSUtility.dist2D(current.getCoordinate(), cutPoints.get(index + 1).getCoordinate());
                 rsLength += segmentLength * (aboveRoof ? buildingRoofG : current.getGroundCoefficient());
                 totalLength += segmentLength;
             }
@@ -207,7 +207,7 @@ public class CutProfile {
                 }
             }
             if(index >= i0) {
-                double segmentLength = current.getCoordinate().distance(cutPoints.get(index + 1).getCoordinate());
+                double segmentLength = JTSUtility.dist2D(current.getCoordinate(), cutPoints.get(index + 1).getCoordinate());
                 rsLength += segmentLength * (aboveRoof ? buildingRoofG : current.getGroundCoefficient());
                 totalLength += segmentLength;
             }

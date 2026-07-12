@@ -1078,7 +1078,7 @@ public class ProfileBuilder {
         Vector2D exteriorVector = facetVector.rotate(LEFT_SIDE).normalize().multiply(MILLIMETER);
         Coordinate exteriorPoint = exteriorVector.add(Vector2D.create(intersection)).toCoordinate();
         // exterior point closer to source so we know that we enter the building
-        if(exteriorPoint.distance(fullLine.p0) < intersection.distance(fullLine.p0)) {
+        if(JTSUtility.dist2D(exteriorPoint, fullLine.p0) < JTSUtility.dist2D(intersection, fullLine.p0)) {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_ENTER;
         } else {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_EXIT;
@@ -1238,11 +1238,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(aTri, bTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionPtDist = distline_line;
@@ -1256,11 +1256,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(bTri, cTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionPtDist = distline_line;
@@ -1274,11 +1274,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(cTri, aTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionSide = 1;

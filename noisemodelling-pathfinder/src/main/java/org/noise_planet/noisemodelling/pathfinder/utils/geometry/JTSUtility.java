@@ -266,7 +266,7 @@ public class JTSUtility {
         for (int idPoint = 1; idPoint < listPoints.size(); idPoint++) {
             final Coordinate pt = listPoints.get(idPoint);
             // Get 2D distance
-            newCoord.add(new Coordinate(newCoord.get(idPoint - 1).x + pt.distance(listPoints.get(idPoint - 1)), pt.z));
+            newCoord.add(new Coordinate(newCoord.get(idPoint - 1).x + dist2D(pt, listPoints.get(idPoint - 1)), pt.z));
         }
         if(tolerance > 0) {
             // remove collinear points using tolerance
@@ -436,7 +436,7 @@ public class JTSUtility {
      * @param c1
      * @return the distance in double
      */
-    public static Double dist2D(Coordinate c0, Coordinate c1) {
+    public static double dist2D(Coordinate c0, Coordinate c1) {
         return Math.sqrt((c1.x-c0.x)*(c1.x-c0.x) + (c1.y-c0.y)*(c1.y-c0.y));
     }
 
