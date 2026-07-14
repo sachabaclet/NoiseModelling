@@ -78,6 +78,9 @@ public class ProfileBuilder {
     /** RTree with Buildings's walls linestrings, walls linestring, GroundEffect linestrings
      * The object is an integer. It's an index of the array {@link #processedObstructions} */
     public STRtree rtree;
+    /** RTree with the {@link Wall} segments of buildings and standalone walls only,
+     * used by the reflection wall search */
+    private STRtree wallsRtree;
     private STRtree groundEffectsRtree = new STRtree(TREE_NODE_CAPACITY);
 
 
@@ -793,6 +796,7 @@ public class ProfileBuilder {
         }
         //Process buildings
         rtree = new STRtree(buildingNodeCapacity);
+        wallsRtree = new STRtree(buildingNodeCapacity);
         buildingsWideAnglePoints.clear();
         for (int j = 0; j < buildings.size(); j++) {
             Building building = buildings.get(j);
@@ -806,6 +810,7 @@ public class ProfileBuilder {
                 w.copyAlphas(building);
                 processedObstructions.add(w);
                 rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
+                wallsRtree.insert(new Envelope(lineSegment.p0, lineSegment.p1), w);
             }
         }
         for (int j = 0; j < walls.size(); j++) {
@@ -818,6 +823,7 @@ public class ProfileBuilder {
                 w.setPrimaryKey(wall.primaryKey);
                 processedObstructions.add(w);
                 rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
+                wallsRtree.insert(new Envelope(lineSegment.p0, lineSegment.p1), w);
             }
         }
         // Set buildings and walls unmodifiable
@@ -848,6 +854,7 @@ public class ProfileBuilder {
             }
         }
         rtree.build();
+        wallsRtree.build();
         groundEffectsRtree.build();
         // initialize with default frequencies
         setFrequencyArray(frequencyArray);
@@ -879,12 +886,8 @@ public class ProfileBuilder {
      */
     public List<Wall> getWallsIn(Envelope env) {
         List<Wall> list = new ArrayList<>();
-        List<Integer> indexes = rtree.query(env);
-        for(int i : indexes) {
-            LineObstruction obstruction = getProcessedObstructions().get(i);
-            if(obstruction instanceof Wall) {
-                list.add((Wall) obstruction);
-            }
+        for (Object wall : wallsRtree.query(env)) {
+            list.add((Wall) wall);
         }
         return list;
     }
