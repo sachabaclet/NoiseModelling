@@ -1,5 +1,5 @@
 .. DO NOT UPDATE THIS FILE!!
-.. This document has been automatically generated with noisemodelling-scripts/src/main/java/org/noise_planet/noisemodelling/webserver/script/GenerateFunctionsDocs.java
+.. This document has been automatically generated with noisemodelling-scripts/src/main/java/org/noise_planet/noisemodelling/autodoc/GenerateFunctionsDocs.java
 
 Road Emission from Traffic
 ==========================
@@ -94,7 +94,7 @@ Optional inputs
 ~~~~~~~~~~~~~~~
 
 ``coefficientVersion`` — *Coefficient version*
-   🌧 Cnossos coefficient version  (1 = 2015, 2 = 2020)
+   🌧 Cnossos coefficient version  (1 = 2015, 2 = 2020, 528 = NL)
 
    Type: ``Double``
 

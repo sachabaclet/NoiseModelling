@@ -9,6 +9,8 @@
     <description>NoiseModelling is an extension of H2GIS</description>
     <properties>
         <groovy-version>5.0.3</groovy-version>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
     </properties>
     <organization>
         <name>UMRAE, CEREMA, Univ Gustave Eiffel</name>
@@ -234,7 +236,7 @@
         <!-- Override the 'jogl' repo introduced by matsim, in the future with maven 4, <repositories> tags will be stripped out before being published into maven -->
         <repository>
             <id>jogl</id>
-            <url>https://0.0.0.0</url>
+            <url>https://repo1.maven.org/maven2</url>
             <releases>
                 <enabled>true</enabled>
             </releases>
@@ -314,7 +316,7 @@
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>2.21.1</version>
+                <version>2.21.4</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>

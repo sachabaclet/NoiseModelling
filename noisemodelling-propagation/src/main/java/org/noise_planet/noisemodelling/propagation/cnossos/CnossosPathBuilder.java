@@ -37,10 +37,11 @@ public class CnossosPathBuilder {
                                            List<Double> exactFrequencyArray) {
         final List<CutPoint> cuts = cutProfile.cutPoints;
 
-        Coordinate src = pts2D.get(0);
-        Coordinate rcv = pts2D.get(pts2D.size() - 1);
+        Coordinate src = pts2D.getFirst();
+        Coordinate rcv = pts2D.getLast();
         CutPoint srcCut = cutProfile.getSource();
         CutPoint rcvCut = cutProfile.getReceiver();
+        double maxDeltaH = Double.NEGATIVE_INFINITY;
         for (int i0Cut = 1; i0Cut < cuts.size() - 1; i0Cut++) {
             // Skip reflection points — they are not terrain obstacles and should not
             // create Rayleigh diffraction points
@@ -50,8 +51,8 @@ public class CnossosPathBuilder {
             int iO = cut2DGroundIndex.get(i0Cut);
             Coordinate o = pts2DGround[iO];
 
-            double dSO = src.distance(o);
-            double dOR = o.distance(rcv);
+            double dSO = JTSUtility.dist2D(src, o);
+            double dOR = JTSUtility.dist2D(o, rcv);
             double deltaH = dSR.orientationIndex(o) * (dSO + dOR - srSeg.d);
             boolean rcrit = false;
             for(double f : exactFrequencyArray) {
@@ -60,7 +61,7 @@ public class CnossosPathBuilder {
                     break;
                 }
             }
-            if (rcrit) {
+            if (rcrit && deltaH > maxDeltaH) {
                 rcrit = false;
                 //Add point path
 
@@ -78,9 +79,9 @@ public class CnossosPathBuilder {
                 Coordinate rcvPrime = new Coordinate(rcv.x + (seg2.rMeanPlane.x - rcv.x) * 2, rcv.y + (seg2.rMeanPlane.y - rcv.y) * 2);
 
                 LineSegment dSPrimeRPrime = new LineSegment(srcPrime, rcvPrime);
-                srSeg.dPrime = srcPrime.distance(rcvPrime);
-                seg1.dPrime = srcPrime.distance(o);
-                seg2.dPrime = o.distance(rcvPrime);
+                srSeg.dPrime = JTSUtility.dist2D(srcPrime, rcvPrime);
+                seg1.dPrime = JTSUtility.dist2D(srcPrime, o);
+                seg2.dPrime = JTSUtility.dist2D(o, rcvPrime);
 
                 double deltaPrimeH = dSPrimeRPrime.orientationIndex(o) * (seg1.dPrime + seg2.dPrime - srSeg.dPrime);
                 for(double f : exactFrequencyArray) {
@@ -92,10 +93,10 @@ public class CnossosPathBuilder {
                 if (rcrit) {
                     seg1.setGpath(cutProfile.getGPath(srcCut, cuts.get(i0Cut), Scene.DEFAULT_G_BUILDING), srcCut.getGroundCoefficient());
                     seg2.setGpath(cutProfile.getGPath(cuts.get(i0Cut), rcvCut, Scene.DEFAULT_G_BUILDING), srcCut.getGroundCoefficient());
-                    double dSPrimeO = seg1.sPrime.distance(o);
-                    double dSPrimeR = seg1.sPrime.distance(rcv);
-                    double dORPrime = o.distance(seg2.rPrime);
-                    double dSRPrime = src.distance(seg2.rPrime);
+                    double dSPrimeO = JTSUtility.dist2D(seg1.sPrime, o);
+                    double dSPrimeR = JTSUtility.dist2D(seg1.sPrime, rcv);
+                    double dORPrime = JTSUtility.dist2D(o, seg2.rPrime);
+                    double dSRPrime = JTSUtility.dist2D(src, seg2.rPrime);
                     if(!pathParameters.isFavourable()) {
                         pathParameters.delta = deltaH;
                         pathParameters.deltaPrime = deltaPrimeH;
@@ -112,16 +113,19 @@ public class CnossosPathBuilder {
                             pathParameters.delta = toCurve(dSO, srSeg.d) + toCurve(dOR, srSeg.d) - toCurve(srSeg.d, srSeg.d);
                         } else {
                             Coordinate pA = dSR.pointAlong((o.x-src.x)/(rcv.x-src.x));
-                            pathParameters.delta =2*toCurve(src.distance(pA), srSeg.d) + 2*toCurve(pA.distance(rcv), srSeg.d) - toCurve(dSO, srSeg.d) - toCurve(dOR, srSeg.d) - toCurve(srSeg.d, srSeg.d);
+                            pathParameters.delta =2*toCurve(JTSUtility.dist2D(src, pA), srSeg.d) + 2*toCurve(JTSUtility.dist2D(pA, rcv), srSeg.d) - toCurve(dSO, srSeg.d) - toCurve(dOR, srSeg.d) - toCurve(srSeg.d, srSeg.d);
                         }
                         if(dSPrimeRPrime.orientationIndex(o) == 1) {
                             pathParameters.deltaPrime = toCurve(seg1.dPrime, srSeg.dPrime) + toCurve(seg2.dPrime, srSeg.dPrime) - toCurve(srSeg.dPrime, srSeg.dPrime);
                         } else {
                             Coordinate pA = dSPrimeRPrime.pointAlong((o.x-srcPrime.x)/(rcvPrime.x-srcPrime.x));
-                            pathParameters.deltaPrime =2*toCurve(srcPrime.distance(pA), srSeg.dPrime) + 2*toCurve(pA.distance(rcvPrime), srSeg.dPrime) - toCurve(seg1.dPrime, srSeg.dPrime) - toCurve(seg2.dPrime, srSeg.dPrime) - toCurve(srSeg.dPrime, srSeg.dPrime);
+                            pathParameters.deltaPrime =2*toCurve(JTSUtility.dist2D(srcPrime, pA), srSeg.dPrime) + 2*toCurve(JTSUtility.dist2D(pA, rcvPrime), srSeg.dPrime) - toCurve(seg1.dPrime, srSeg.dPrime) - toCurve(seg2.dPrime, srSeg.dPrime) - toCurve(srSeg.dPrime, srSeg.dPrime);
                         }
                     }
 
+                    maxDeltaH = deltaH;
+                    segments.clear();
+                    points.clear();
                     segments.add(seg1);
                     segments.add(seg2);
 
@@ -166,10 +170,10 @@ public class CnossosPathBuilder {
         seg.sPrime = Vector2D.create(sourcePointOnMeanPlane).add(sourceToProjectedPoint).toCoordinate();
         seg.rPrime = Vector2D.create(receiverPointOnMeanPlane).add(receiverToProjectedPoint).toCoordinate();
 
-        seg.d = src.distance(rcv);
-        seg.dp =sourcePointOnMeanPlane.distance(receiverPointOnMeanPlane);
-        seg.zsH = src.distance(sourcePointOnMeanPlane);
-        seg.zrH = rcv.distance(receiverPointOnMeanPlane);
+        seg.d = JTSUtility.dist2D(src, rcv);
+        seg.dp =JTSUtility.dist2D(sourcePointOnMeanPlane, receiverPointOnMeanPlane);
+        seg.zsH = JTSUtility.dist2D(src, sourcePointOnMeanPlane);
+        seg.zrH = JTSUtility.dist2D(rcv, receiverPointOnMeanPlane);
         seg.a = meanPlane[0];
         seg.b = meanPlane[1];
         seg.testFormH = seg.dp/(30*(seg.zsH +seg.zrH));
@@ -188,22 +192,21 @@ public class CnossosPathBuilder {
      * Given the vertical cut profile (can be a single plane or multiple like a folding panel) return the multiple contribution ray paths
      * following Cnossos specification, or empty if there is no valid path.
      * @param cutProfile Vertical cut of a domain
-     * @param bodyBarrier True if there is a body barrier on the path
      * @param exactFrequencyArray Expected frequencies
      * @param gS Ground factor of the source area
      * @return The cnossos path or null
      */
-    public static List<CnossosPath> computeCnossosPathsFromCutProfile(CutProfile cutProfile , boolean bodyBarrier, List<Double> exactFrequencyArray, double gS) {
+    public static List<CnossosPath> computeCnossosPathsFromCutProfile(CutProfile cutProfile , List<Double> exactFrequencyArray, double gS) {
         List<CnossosPath> cnossosPaths = new ArrayList<>();
         if(cutProfile.profileType == CutProfile.PROFILE_TYPE.DIRECT ||
                 cutProfile.profileType == CutProfile.PROFILE_TYPE.REFLECTION) {
-            CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, bodyBarrier, exactFrequencyArray, gS, false);
+            CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray, gS, false);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
-            cnossosPath = computeCnossosPathFromCutProfile(cutProfile, bodyBarrier, exactFrequencyArray, gS, true);
+            cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray, gS, true);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
         } else if (cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
                 cutProfile.profileType == CutProfile.PROFILE_TYPE.RIGHT) {
-            CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, bodyBarrier, exactFrequencyArray, gS, cutProfile.curvedPath);
+            CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray, gS, cutProfile.curvedPath);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
         }
         return cnossosPaths;
@@ -213,18 +216,22 @@ public class CnossosPathBuilder {
      * Given the vertical cut profile (can be a single plane or multiple like a folding panel) return the ray path
      * following Cnossos specification, or null if there is no valid path.
      * @param cutProfile Vertical cut of a domain
-     * @param bodyBarrier True if there is a body barrier on the path
      * @param exactFrequencyArray Expected frequencies
      * @param gS Ground factor of the source area
      * @param favourable Compute the favourable contribution for the provided profile
      * @return The cnossos path or null
      */
-    public static CnossosPath computeCnossosPathFromCutProfile(CutProfile cutProfile , boolean bodyBarrier, List<Double> exactFrequencyArray, double gS, boolean favourable) {
+    public static CnossosPath computeCnossosPathFromCutProfile(CutProfile cutProfile , List<Double> exactFrequencyArray, double gS, boolean favourable) {
         if(favourable &&
                 (cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
                         cutProfile.profileType == CutProfile.PROFILE_TYPE.RIGHT)
                 && !cutProfile.isCurvedPath()) {
             throw new IllegalArgumentException("A favourable path cannot be computed using lateral non curved cut profile");
+        }
+        // Check if source or receiver are below the ground
+        if(cutProfile.getReceiver().coordinate.z < cutProfile.getReceiver().getzGround()
+          || cutProfile.getSource().coordinate.z < cutProfile.getSource().getzGround()) {
+            return null;
         }
         List<SegmentPath> segments = new ArrayList<>();
         List<PointPath> points = new ArrayList<>();
@@ -240,8 +247,8 @@ public class CnossosPathBuilder {
         List<Integer> cut2DGroundIndex = new ArrayList<>(cutProfilePoints.size());
         Coordinate[] pts2DGround = cutProfile.computePts2DGround(cut2DGroundIndex).toArray(new Coordinate[0]);
         double[] meanPlane = JTSUtility.getMeanPlaneCoefficients(pts2DGround);
-        Coordinate firstPts2D = pts2D.get(0);
-        Coordinate lastPts2D = pts2D.get(pts2D.size()-1);
+        Coordinate firstPts2D = pts2D.getFirst();
+        Coordinate lastPts2D = pts2D.getLast();
         SegmentPath srPath = computeSegment(firstPts2D, lastPts2D, meanPlane, cutProfile.getGPath(), cutProfile.getSource().groundCoefficient);
         // Directive 2002/49/EC, section 2.5.3 "Significant heights above the ground":
         // "If the equivalent height of a point becomes negative, i.e. if the point is located
@@ -284,7 +291,6 @@ public class CnossosPathBuilder {
         cnossosPath.setPointList(points);
         cnossosPath.setSegmentList(segments);
         cnossosPath.setSRSegment(srPath);
-        cnossosPath.init(exactFrequencyArray.size());
         List<Coordinate> hullPts2D = pts2D;
         List<CutPoint> transformedCutPoints = null;
         if(favourable) {
@@ -372,8 +378,8 @@ public class CnossosPathBuilder {
                 }
                 Orientation emissionDirection = computeOrientation(cutProfile.getSource().orientation,
                         cutProfile.cutPoints.get(i0).getCoordinate(), targetPosition);
-                points.get(0).orientation = emissionDirection;
-                cnossosPath.raySourceReceiverDirectivity = emissionDirection;
+                points.getFirst().orientation = emissionDirection;
+                cutProfile.setRaySourceReceiverDirectivity(emissionDirection);
                 src = pts2D.get(i0);
             }
             // Add reflection/vertical edge diffraction points/segments between i0 i1
@@ -422,11 +428,11 @@ public class CnossosPathBuilder {
             points.add(new PointPath(pts2D.get(i1), cutPt1.getzGround(), RECV));
             if(previousPivotPoint != i0 && i == hullPointsIndices.size() - 1) {
                 // we added segments before i1 vertical plane diffraction point, but it is the last vertical plane
-                // diffraction point and we must add the remaining segment between the last horizontal diffraction point
+                // diffraction point, and we must add the remaining segment between the last horizontal diffraction point
                 // and the last point
                 Coordinate[] segmentGroundPoints = Arrays.copyOfRange(pts2DGround, previousPivotGround, pts2DGround.length);
                 meanPlane = JTSUtility.getMeanPlaneCoefficients(segmentGroundPoints);
-                SegmentPath seg = computeSegment(pts2D.get(previousPivotPoint), pts2D.get(pts2D.size() - 1),
+                SegmentPath seg = computeSegment(pts2D.get(previousPivotPoint), pts2D.getLast(),
                         meanPlane, cutProfile.getGPathByIndex(previousPivotPoint, cutProfile.cutPoints.size() - 1, Scene.DEFAULT_G_BUILDING),
                         gS);
                 seg.setPoints2DGround(segmentGroundPoints);
@@ -445,9 +451,8 @@ public class CnossosPathBuilder {
             path.setPoints2DGround(segmentGroundPoints);
             segments.add(path);
             if (i != hullPointsIndices.size() - 1) {
-                PointPath pt = points.get(points.size() - 1);
+                PointPath pt = points.getLast();
                 pt.type = DIFH;
-                pt.bodyBarrier = bodyBarrier;
                 if(cutPt1 instanceof CutPointWall) {
                     pt.alphaWall = ((CutPointWall) cutPt1).wallAlpha;
                 }
@@ -458,7 +463,7 @@ public class CnossosPathBuilder {
             return null;
         }
 
-        Coordinate rcv = points.get(points.size()-1).coordinate;
+        Coordinate rcv = points.getLast().coordinate;
         PointPath p0 = points.stream().filter(p -> p.type.equals(DIFH)).findFirst().orElse(null);
         if(p0==null){
             // Direct propagation (no diffraction over obstructing objects)
@@ -484,15 +489,16 @@ public class CnossosPathBuilder {
                 cnossosPath.e = 0;
                 List<PointPath> diffPoints = points.stream().filter(pointPath -> pointPath.type != REFL).collect(Collectors.toList());
                 for(int idPoint = 1; idPoint < diffPoints.size() - 2; idPoint++) {
-                    cnossosPath.e += diffPoints.get(idPoint).coordinate.distance(diffPoints.get(idPoint+1).coordinate);
+                    cnossosPath.e += JTSUtility.dist2D(diffPoints.get(idPoint).coordinate, diffPoints.get(idPoint+1).coordinate);
                 }
                 long difVPointCount = cnossosPath.getPointList().stream().
                         filter(pointPath -> pointPath.type.equals(DIFV)).count();
                 double distance = difVPointCount == 0 ? cnossosPath.getSRSegment().d : cnossosPath.getSRSegment().dc;
-                cnossosPath.delta = segments.get(0).d + cnossosPath.e + segments.get(segments.size()-1).d - distance;
+                cnossosPath.delta = segments.getFirst().d + cnossosPath.e + segments.getLast().d - distance;
             } else {
                 segments.addAll(rayleighSegments);
                 points.addAll(1, rayleighPoints);
+                points.sort((p1, p2) -> Double.compare(p1.coordinate.x, p2.coordinate.x));
             }
             return cnossosPath;
         }
@@ -503,21 +509,21 @@ public class CnossosPathBuilder {
         }
         Coordinate cn = pn.coordinate;
 
-        SegmentPath seg1 = segments.get(0);
-        SegmentPath seg2 = segments.get(segments.size()-1);
+        SegmentPath seg1 = segments.getFirst();
+        SegmentPath seg2 = segments.getLast();
 
         double dSO0 = seg1.d;
         double dOnR = seg2.d;
         LineSegment sr = new LineSegment(src, rcv);
 
         LineSegment sPrimeR = new LineSegment(seg1.sPrime, rcv);
-        double dSPrimeR = seg1.sPrime.distance(rcv);
-        double dSPrimeO = seg1.sPrime.distance(c0);
+        double dSPrimeR = JTSUtility.dist2D(seg1.sPrime, rcv);
+        double dSPrimeO = JTSUtility.dist2D(seg1.sPrime, c0);
         // Compute cumulated distance between the first diffraction and the last diffraction point
         cnossosPath.e = 0;
         List<PointPath> diffPoints = points.stream().filter(pointPath -> pointPath.type != REFL).collect(Collectors.toList());
         for(int idPoint = 1; idPoint < diffPoints.size() - 2; idPoint++) {
-            cnossosPath.e += diffPoints.get(idPoint).coordinate.distance(diffPoints.get(idPoint+1).coordinate);
+            cnossosPath.e += JTSUtility.dist2D(diffPoints.get(idPoint).coordinate, diffPoints.get(idPoint+1).coordinate);
         }
         if(favourable) {
             cnossosPath.deltaSPrimeR = toCurve(dSPrimeO, dSPrimeR) + toCurve(cnossosPath.e, dSPrimeR) + toCurve(dOnR, dSPrimeR) - toCurve(dSPrimeR, dSPrimeR);
@@ -526,8 +532,8 @@ public class CnossosPathBuilder {
         }
 
         LineSegment sRPrime = new LineSegment(src, seg2.rPrime);
-        double dSRPrime = src.distance(seg2.rPrime);
-        double dORPrime = cn.distance(seg2.rPrime);
+        double dSRPrime = JTSUtility.dist2D(src, seg2.rPrime);
+        double dORPrime = JTSUtility.dist2D(cn, seg2.rPrime);
 
         if(favourable) {
             cnossosPath.deltaSRPrime = toCurve(dSO0, dSRPrime) + toCurve(cnossosPath.e, dSRPrime) + toCurve(dORPrime, dSRPrime) - toCurve(dSRPrime, dSRPrime);
@@ -539,9 +545,9 @@ public class CnossosPathBuilder {
         Coordinate rcvPrime = new Coordinate(rcv.x + (seg2.rMeanPlane.x - rcv.x) * 2, rcv.y + (seg2.rMeanPlane.y - rcv.y) * 2);
 
         LineSegment dSPrimeRPrime = new LineSegment(srcPrime, rcvPrime);
-        srPath.dPrime = srcPrime.distance(rcvPrime);
-        seg1.dPrime = srcPrime.distance(c0);
-        seg2.dPrime = cn.distance(rcvPrime);
+        srPath.dPrime = JTSUtility.dist2D(srcPrime, rcvPrime);
+        seg1.dPrime = JTSUtility.dist2D(srcPrime, c0);
+        seg2.dPrime = JTSUtility.dist2D(cn, rcvPrime);
 
         if(!favourable || !(cutProfile.profileType == CutProfile.PROFILE_TYPE.DIRECT || cutProfile.profileType == CutProfile.PROFILE_TYPE.REFLECTION)) {
             long difVPointCount = cnossosPath.getPointList().stream().
@@ -554,8 +560,8 @@ public class CnossosPathBuilder {
             } else {
                 Coordinate pA = sr.pointAlong((c0.x - src.x) / (rcv.x - src.x));
                 cnossosPath.delta =
-                        2 * toCurve(src.distance(pA), srPath.d) +
-                        2 * toCurve(pA.distance(rcv), srPath.d) -
+                        2 * toCurve(JTSUtility.dist2D(src, pA), srPath.d) +
+                        2 * toCurve(JTSUtility.dist2D(pA, rcv), srPath.d) -
                         toCurve(seg1.d, srPath.d) -
                         toCurve(cnossosPath.e, srPath.d) -
                         toCurve(seg2.d, srPath.d) -
@@ -570,7 +576,7 @@ public class CnossosPathBuilder {
                 cnossosPath.deltaPrime = toCurve(seg1.dPrime, srPath.dPrime) + toCurve(cnossosPath.e, srPath.dPrime) + toCurve(seg2.dPrime, srPath.dPrime) - toCurve(srPath.dPrime, srPath.dPrime);
             } else {
                 Coordinate pA = dSPrimeRPrime.pointAlong((c0.x-srcPrime.x)/(rcvPrime.x-srcPrime.x));
-                cnossosPath.deltaPrime =2*toCurve(srcPrime.distance(pA), srPath.dPrime) + 2*toCurve(pA.distance(rcvPrime), srPath.dPrime) - toCurve(seg1.dPrime, srPath.dPrime) - toCurve(cnossosPath.e, srPath.dPrime) - toCurve(seg2.dPrime, srPath.dPrime) - toCurve(srPath.dPrime, srPath.dPrime);
+                cnossosPath.deltaPrime =2*toCurve(JTSUtility.dist2D(srcPrime, pA), srPath.dPrime) + 2*toCurve(JTSUtility.dist2D(pA, rcvPrime), srPath.dPrime) - toCurve(seg1.dPrime, srPath.dPrime) - toCurve(cnossosPath.e, srPath.dPrime) - toCurve(seg2.dPrime, srPath.dPrime) - toCurve(srPath.dPrime, srPath.dPrime);
             }
         }
         return cnossosPath;

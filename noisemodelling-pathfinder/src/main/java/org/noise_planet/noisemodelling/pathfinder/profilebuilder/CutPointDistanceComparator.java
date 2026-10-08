@@ -11,6 +11,7 @@
 package org.noise_planet.noisemodelling.pathfinder.profilebuilder;
 
 import org.locationtech.jts.geom.Coordinate;
+import org.noise_planet.noisemodelling.pathfinder.utils.geometry.JTSUtility;
 
 import java.util.Comparator;
 
@@ -23,6 +24,6 @@ public class CutPointDistanceComparator implements Comparator<CutPoint> {
 
     @Override
     public int compare(CutPoint o1, CutPoint o2) {
-        return Double.compare(o1.coordinate.distance(reference), o2.coordinate.distance(reference));
+        return Double.compare(JTSUtility.dist2D(o1.coordinate, reference), JTSUtility.dist2D(o2.coordinate, reference));
     }
 }

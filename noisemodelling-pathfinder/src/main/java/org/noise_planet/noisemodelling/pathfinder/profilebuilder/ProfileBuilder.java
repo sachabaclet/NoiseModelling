@@ -11,6 +11,7 @@ package org.noise_planet.noisemodelling.pathfinder.profilebuilder;
 
 import org.locationtech.jts.algorithm.Angle;
 import org.locationtech.jts.algorithm.CGAlgorithms3D;
+import org.locationtech.jts.algorithm.RobustLineIntersector;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.index.strtree.STRtree;
 import org.locationtech.jts.io.WKTWriter;
@@ -29,6 +30,7 @@ import org.noise_planet.noisemodelling.pathfinder.utils.geometry.JTSUtility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -73,8 +75,6 @@ public class ProfileBuilder {
     private List<Wall> walls = new ArrayList<>();
     /** Building RTree. */
     private final STRtree buildingTree;
-    /** Building RTree. */
-    private final STRtree wallTree = new STRtree(TREE_NODE_CAPACITY);
     /** RTree with Buildings's walls linestrings, walls linestring, GroundEffect linestrings
      * The object is an integer. It's an index of the array {@link #processedObstructions} */
     public STRtree rtree;
@@ -91,7 +91,7 @@ public class ProfileBuilder {
     private List<Triangle> topoNeighbors = new ArrayList<>();
     /** Topographic Vertices .*/
     private List<Coordinate> vertices = new ArrayList<>();
-    /** Topographic RTree. */
+    /** Query structure for DEM triangles */
     private STRtree topoTree;
 
     /** List of ground effects. */
@@ -175,34 +175,27 @@ public class ProfileBuilder {
      */
     public ProfileBuilder addBuilding(Building building) {
         if(building.poly == null || building.poly.isEmpty()) {
-            throw  new IllegalArgumentException(
-                String.format(Locale.ROOT,
-                    "Building with PK : %s is not valid, it has a null or empty geometry.",
-                    building.primaryKey)
+            throw new IllegalArgumentException(
+                    String.format(Locale.ROOT,
+                            "Building with PK : %s is not valid, it has a null or empty geometry.",
+                            building.primaryKey)
             );
-        }
-        else if (!building.isValid) {
-            throw  new IllegalArgumentException(
-                String.format(Locale.ROOT,
-                    "Building with PK : %s is not valid, it doesn't provide a Z value for all it's polygon points",
-                    building.primaryKey)
+        } else if (!building.isValid) {
+            throw new IllegalArgumentException(
+                    String.format(Locale.ROOT,
+                            "Building with PK : %s is not valid, it doesn't provide a Z value for all it's polygon points",
+                            building.primaryKey)
             );
-        }
-        else if(!isFeedingFinished) {
-            if(envelope == null) {
+        } else {
+            if (envelope == null) {
                 envelope = building.poly.getEnvelopeInternal();
-            }
-            else {
+            } else {
                 envelope.expandToInclude(building.poly.getEnvelopeInternal());
             }
             buildings.add(building);
             buildingTree.insert(building.poly.getEnvelopeInternal(), buildings.size());
             return this;
         }
-        else{
-            LOGGER.warn("Cannot add building, feeding is finished.");
-        }
-        return this;
     }
 
     /**
@@ -398,19 +391,20 @@ public class ProfileBuilder {
     public Coordinate offsetCoordinateToAltitudeUsingDigitalElevationModel(Coordinate geometryCoordinate, boolean checkForBuildingVolumes) {
         Coordinate offsetCoordinate = new Coordinate(geometryCoordinate.x, geometryCoordinate.y, geometryCoordinate.z + getZGround(geometryCoordinate));
         if(checkForBuildingVolumes) {
-            logWarningIfCoordinatesIntoBuildings(geometryCoordinate);
+            logWarningIfCoordinatesIntoBuildings(offsetCoordinate);
         }
         return offsetCoordinate;
     }
 
     private void logWarningIfCoordinatesIntoBuildings(Coordinate... coordinates) {
+        DecimalFormat decimalFormat = new DecimalFormat("#.##");
         for (Coordinate coordinate : coordinates) {
             // Check if the source is into a building
             Building building = getBuildingAtCoordinate(coordinate);
             if (building != null && building.getAverageZ() >= coordinate.z) {
                 LOGGER.warn("Geometry (Source point or Receiver point) has been defined inside a building" +
-                                " (building average altitude : {} m), it should be moved higher Geometry: {}",
-                        building.getAverageZ(), new WKTWriter(3).write(new GeometryFactory().createPoint(coordinate)));
+                                " (building roof average altitude : {} m), it should be moved higher Geometry: {}",
+                       decimalFormat.format(building.getAverageZ()), new WKTWriter(3).write(new GeometryFactory().createPoint(coordinate)));
                 break;
             }
         }
@@ -486,7 +480,6 @@ public class ProfileBuilder {
             );
         }
         walls.add(wall);
-        wallTree.insert(new Envelope(wall.line.p0, wall.line.p1), walls.size());
         return this;
     }
 
@@ -709,6 +702,58 @@ public class ProfileBuilder {
         return groundAbsorptions;
     }
 
+
+    /**
+     * Convert points and line
+     * @throws LayerDelaunayError
+     */
+    public void buildDemQueryStructure() throws LayerDelaunayError{
+        if(!topoPoints.isEmpty() || !topoLines.isEmpty()) {
+            //Feed the Delaunay layer
+            LayerDelaunay layerDelaunay = new LayerTinfour();
+
+            // We use triangles neighbors information to navigate through triangles quickly
+            layerDelaunay.setRetrieveNeighbors(true);
+
+            for (Coordinate topoPoint : topoPoints) {
+                layerDelaunay.addVertex(topoPoint);
+            }
+
+            for (LineString topoLine : topoLines) {
+                // Attribute parameter (-1) is not used in ProfileBuilder for DEM
+                layerDelaunay.addLineString(topoLine, -1);
+            }
+
+            //Process Delaunay
+            layerDelaunay.processDelaunay();
+            topoTriangles = layerDelaunay.getTriangles();
+            topoNeighbors = layerDelaunay.getNeighbors();
+
+            //Feed the RTree
+            topoTree = new STRtree(topoNodeCapacity);
+            vertices = layerDelaunay.getVertices();
+
+            // wallIndex set will merge shared triangle segments
+            Set<IntegerTuple> wallIndex = new HashSet<>();
+            for (int i = 0; i < topoTriangles.size(); i++) {
+                final Triangle tri = topoTriangles.get(i);
+                wallIndex.add(new IntegerTuple(tri.getA(), tri.getB(), i));
+                wallIndex.add(new IntegerTuple(tri.getB(), tri.getC(), i));
+                wallIndex.add(new IntegerTuple(tri.getC(), tri.getA(), i));
+                // Insert triangle in rtree
+                final Coordinate vA = vertices.get(tri.getA());
+                final Coordinate vB = vertices.get(tri.getB());
+                final Envelope triangleEnvelope = new Envelope(vA, vB);
+                final Coordinate vC = vertices.get(tri.getC());
+                triangleEnvelope.expandToInclude(vC);
+                topoTree.insert(triangleEnvelope, i);
+            }
+            topoTree.build();
+            topoPoints.clear();
+            topoLines.clear();
+        }
+    }
+
     /**
      * Finish the data feeding. Once called, no more data can be added and process it in order to prepare the
      * profile retrieving.
@@ -721,64 +766,10 @@ public class ProfileBuilder {
         isFeedingFinished = true;
 
         //Process topographic points and lines
-        if(topoPoints.size()+topoLines.size() > 1) {
-            //Feed the Delaunay layer
-            LayerDelaunay layerDelaunay = new LayerTinfour();
-            layerDelaunay.setRetrieveNeighbors(true);
-            try {
-                for (Coordinate topoPoint : topoPoints) {
-                    layerDelaunay.addVertex(topoPoint);
-                }
-            } catch (LayerDelaunayError e) {
-                LOGGER.error("Error while adding topographic points to Delaunay layer.", e);
-                return null;
-            }
-            try {
-                for (LineString topoLine : topoLines) {
-                    //TODO ensure the attribute parameter is useless
-                    layerDelaunay.addLineString(topoLine, -1);
-                }
-            } catch (LayerDelaunayError e) {
-                LOGGER.error("Error while adding topographic points to Delaunay layer.", e);
-                return null;
-            }
-            //Process Delaunay
-            try {
-                layerDelaunay.processDelaunay();
-            } catch (LayerDelaunayError e) {
-                LOGGER.error("Error while processing Delaunay.", e);
-                return null;
-            }
-            try {
-                topoTriangles = layerDelaunay.getTriangles();
-                topoNeighbors = layerDelaunay.getNeighbors();
-            } catch (LayerDelaunayError e) {
-                LOGGER.error("Error while getting triangles", e);
-                return null;
-            }
-            //Feed the RTree
-            topoTree = new STRtree(topoNodeCapacity);
-            try {
-                vertices = layerDelaunay.getVertices();
-            } catch (LayerDelaunayError e) {
-                LOGGER.error("Error while getting vertices", e);
-                return null;
-            }
-            // wallIndex set will merge shared triangle segments
-            Set<IntegerTuple> wallIndex = new HashSet<>();
-            for (int i = 0; i < topoTriangles.size(); i++) {
-                final Triangle tri = topoTriangles.get(i);
-                wallIndex.add(new IntegerTuple(tri.getA(), tri.getB(), i));
-                wallIndex.add(new IntegerTuple(tri.getB(), tri.getC(), i));
-                wallIndex.add(new IntegerTuple(tri.getC(), tri.getA(), i));
-                // Insert triangle in rtree
-                Coordinate vA = vertices.get(tri.getA());
-                Coordinate vB = vertices.get(tri.getB());
-                Coordinate vC = vertices.get(tri.getC());
-                Envelope env = FACTORY.createLineString(new Coordinate[]{vA, vB, vC}).getEnvelopeInternal();
-                topoTree.insert(env, i);
-            }
-            topoTree.build();
+        try {
+            buildDemQueryStructure();
+        } catch (LayerDelaunayError e) {
+            throw new IllegalStateException("Error while building DEM query structure", e);
         }
 
         for (Building b : buildings) {
@@ -798,14 +789,18 @@ public class ProfileBuilder {
             Building building = buildings.get(j);
             buildingsWideAnglePoints.put(j + 1,
                     getWideAnglePointsOnPolygon(building.poly.getExteriorRing(), 0, 2 * Math.PI));
-            Coordinate[] coords = building.poly.getCoordinates();
-            for (int i = 0; i < coords.length - 1; i++) {
-                LineSegment lineSegment = new LineSegment(coords[i], coords[i + 1]);
-                Wall w = (Wall) new Wall(lineSegment, j, IntersectionType.BUILDING).setProcessedObstructionIndex(processedObstructions.size());
-                w.setPrimaryKey(building.getPrimaryKey());
-                w.copyAlphas(building);
-                processedObstructions.add(w);
-                rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
+            // Ring by ring, so that no wall joins two rings
+            for (int ring = 0; ring <= building.poly.getNumInteriorRing(); ring++) {
+                Coordinate[] coords = (ring == 0 ? building.poly.getExteriorRing()
+                        : building.poly.getInteriorRingN(ring - 1)).getCoordinates();
+                for (int i = 0; i < coords.length - 1; i++) {
+                    LineSegment lineSegment = new LineSegment(coords[i], coords[i + 1]);
+                    Wall w = (Wall) new Wall(lineSegment, j, IntersectionType.BUILDING).setProcessedObstructionIndex(processedObstructions.size());
+                    w.setPrimaryKey(building.getPrimaryKey());
+                    w.copyAlphas(building);
+                    processedObstructions.add(w);
+                    rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
+                }
             }
         }
         for (int j = 0; j < walls.size(); j++) {
@@ -1028,7 +1023,7 @@ public class ProfileBuilder {
             for (Object groundEffectAreaIndex : res) {
                 if(groundEffectAreaIndex instanceof Integer) {
                     GroundAbsorption groundAbsorption = groundAbsorptions.get((Integer) groundEffectAreaIndex);
-                    if(groundAbsorption.geom.intersects(query)) {
+                    if(groundAbsorption.preparedGeom.intersects(query)) {
                         return (Integer) groundEffectAreaIndex;
                     }
                 }
@@ -1078,7 +1073,7 @@ public class ProfileBuilder {
         Vector2D exteriorVector = facetVector.rotate(LEFT_SIDE).normalize().multiply(MILLIMETER);
         Coordinate exteriorPoint = exteriorVector.add(Vector2D.create(intersection)).toCoordinate();
         // exterior point closer to source so we know that we enter the building
-        if(exteriorPoint.distance(fullLine.p0) < intersection.distance(fullLine.p0)) {
+        if(JTSUtility.dist2D(exteriorPoint, fullLine.p0) < JTSUtility.dist2D(intersection, fullLine.p0)) {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_ENTER;
         } else {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_EXIT;
@@ -1109,7 +1104,7 @@ public class ProfileBuilder {
         Vector2D directionAfter = Vector2D.create(fullLine.p0, fullLine.p1).normalize().multiply(MILLIMETER);
         Point afterIntersectionPoint = FACTORY.createPoint(Vector2D.create(intersection).add(directionAfter).toCoordinate());
         GroundAbsorption groundAbsorption = groundAbsorptions.get(facetLine.getOriginId());
-        if (groundAbsorption.geom.intersects(afterIntersectionPoint)) {
+        if (groundAbsorption.preparedGeom.intersects(afterIntersectionPoint)) {
             // we enter a new ground effect
             newCutPoints.add(new CutPointGroundEffect(processedWallIndex, intersection, groundAbsorption.getCoefficient()));
         } else {
@@ -1150,7 +1145,9 @@ public class ProfileBuilder {
         // Split line into segments for structures based on RTree in order to limit the number of queries
         // (for large area of the line segment envelope)
         List<LineSegment> lines = splitSegment(fullLine.p0, fullLine.p1, maxLineLength);
-        List<CutPoint> newCutPoints = new LinkedList<>();
+        List<CutPoint> newCutPoints = new ArrayList<>();
+        // getIntersection returns an internal coordinate, it must be copied before the intersector is reused
+        RobustLineIntersector intersector = new RobustLineIntersector();
         try {
             for (int j = 0; j < lines.size()
                     && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
@@ -1162,7 +1159,8 @@ public class ProfileBuilder {
                     processed.add((Integer) result);
                     int i = (Integer) result;
                     LineObstruction facetLine = processedObstructions.get(i);
-                    Coordinate intersection = fullLine.intersection(facetLine.line);
+                    intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
+                    Coordinate intersection = intersector.hasIntersection() ? intersector.getIntersection(0) : null;
                     if (intersection != null) {
                         intersection = new Coordinate(intersection);
                         if (!isNaN(facetLine.line.p0.z) && !isNaN(facetLine.line.p1.z)) {
@@ -1238,11 +1236,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(aTri, bTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionPtDist = distline_line;
@@ -1256,11 +1254,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(bTri, cTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionPtDist = distline_line;
@@ -1274,11 +1272,11 @@ public class ProfileBuilder {
             LineSegment triSegment = new LineSegment(cTri, aTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
-            if(closestPoints.length == 2 && closestPoints[0].distance(closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
+            if(closestPoints.length == 2 && JTSUtility.dist2D(closestPoints[0], closestPoints[1]) < JTSUtility.TRIANGLE_INTERSECTION_EPSILON) {
                 intersectionTest = new Coordinate(closestPoints[0].x, closestPoints[0].y, Vertex.interpolateZ(closestPoints[0], triSegment.p0, triSegment.p1));
             }
             if(intersectionTest != null) {
-                distline_line = propagationLine.p1.distance(intersectionTest);
+                distline_line = JTSUtility.dist2D(propagationLine.p1, intersectionTest);
                 if (distline_line < nearestIntersectionPtDist) {
                     segmentIntersection.setCoordinate(intersectionTest);
                     nearestIntersectionSide = 1;
@@ -1519,6 +1517,8 @@ public class ProfileBuilder {
 
 
     /**
+     * Fetch the z ground at this position by browsing the triangles RTREE.
+     * This function should not be called repetitively as it is computationally expensive.
      * @return Altitude in meters from sea level
      */
     public double getZGround(Coordinate coordinate) {
@@ -1534,6 +1534,9 @@ public class ProfileBuilder {
      */
     public double getZGround(Coordinate coordinate, AtomicInteger triangleHint) {
         if(topoTree == null) {
+            if(!topoPoints.isEmpty()) {
+                throw new IllegalStateException("Delaunay triangulation of DEM is not done but a z ground was requested");
+            }
             return 0.0;
         }
         int i = triangleHint.get();
