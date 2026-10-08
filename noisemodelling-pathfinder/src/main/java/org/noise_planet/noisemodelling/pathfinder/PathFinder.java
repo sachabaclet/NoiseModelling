@@ -408,7 +408,8 @@ public class PathFinder {
             // The four side hull searches (left/right x straight/curved) share the same walls
             // and the same plane cuts, the visitor caches them
             BuildingIntersectionPathVisitor sideHullVisitor = createSideHullVisitor(src.position, rcv.position);
-            for(boolean curved : new boolean[]{false, true}) {
+            // The curved profiles are only used by the favourable path
+            for(boolean curved : data.computeFavourablePaths ? new boolean[]{false, true} : new boolean[]{false}) {
                 for(PathFinder.ComputationSide side : PathFinder.ComputationSide.values()) {
                     CutProfile cutProfileSide = computeVEdgeDiffraction(rcv, src, data, side, curved, sideHullVisitor);
                     if (cutProfileSide != null) {
@@ -741,6 +742,21 @@ public class PathFinder {
 
 
     /**
+     * @param rayPath Reflections of the straight image ray
+     * @return True if one of the reflection points is above the top of its wall
+     */
+    private static boolean isReflectionAboveWall(List<MirrorReceiver> rayPath) {
+        for (MirrorReceiver reflection : rayPath) {
+            Coordinate reflectionPosition = reflection.getReflectionPosition();
+            LineSegment wall = reflection.getWall().getLineSegment();
+            if (reflectionPosition.z > Vertex.interpolateZ(reflectionPosition, wall.p0, wall.p1) + epsilon) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      *
      * @param rcv Receiver data
      * @param src Source data
@@ -822,6 +838,11 @@ public class PathFinder {
             }
             if (!completeReflectionChain) {
                 // The reflection chain could not be completed, ignore this image receiver
+                continue;
+            }
+            // Under homogeneous conditions the path goes along the straight ray or above it, so a reflection
+            // point above the top of its wall on the straight ray cannot give a valid path
+            if (!data.computeFavourablePaths && isReflectionAboveWall(rayPath)) {
                 continue;
             }
             // Compute direct path between source and first reflection point, add profile to the data

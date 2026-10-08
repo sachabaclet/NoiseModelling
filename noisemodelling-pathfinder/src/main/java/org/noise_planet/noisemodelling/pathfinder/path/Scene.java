@@ -85,6 +85,9 @@ public class Scene {
     public double maxSrcDist = DEFAULT_MAX_PROPAGATION_DISTANCE;
     /** Maximum reflection wall distance from receiver to source line */
     public double maxRefDist = DEFAULT_MAXIMUM_REF_DIST;
+    /** False when no period can have favourable propagation conditions (homogeneous conditions only),
+     * the paths that only contribute to the favourable conditions are then not computed */
+    public boolean computeFavourablePaths = true;
     /** Maximum receiver-to-wall horizontal distance for the optional reflection cut profile filter */
     private double closeReceiverReflectionWallDistance = 0;
 

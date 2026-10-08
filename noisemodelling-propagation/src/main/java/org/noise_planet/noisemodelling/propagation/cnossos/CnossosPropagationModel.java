@@ -47,7 +47,7 @@ public class CnossosPropagationModel implements PropagationModel {
         if (cnossosPaths.isEmpty()) {
             double gs = scene.getSourceGs(cutProfile.getSource().sourcePk);
             cnossosPaths = CnossosPathBuilder.computeCnossosPathsFromCutProfile(cutProfile,
-                    scene.profileBuilder.exactFrequencyArray, gs);
+                    scene.profileBuilder.exactFrequencyArray, gs, scene.computeFavourablePaths);
         }
         // Compute attenuation for each path
         List<AttenuationOutput> attenuationOutputs = new ArrayList<>();

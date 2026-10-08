@@ -23,4 +23,11 @@ public interface FavourableProbability {
      * @return For the AtmosphericSettings table, returns the settings for the favourable probability model
      */
     String getFavourableProbabilitySettings();
+
+    /**
+     * @return True if the favourable probability is 0 in every direction
+     */
+    default boolean isAlwaysZero() {
+        return false;
+    }
 }

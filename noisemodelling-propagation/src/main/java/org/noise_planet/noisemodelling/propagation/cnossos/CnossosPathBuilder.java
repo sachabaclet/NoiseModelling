@@ -197,6 +197,15 @@ public class CnossosPathBuilder {
      * @return The cnossos path or null
      */
     public static List<CnossosPath> computeCnossosPathsFromCutProfile(CutProfile cutProfile , List<Double> exactFrequencyArray, double gS) {
+        return computeCnossosPathsFromCutProfile(cutProfile, exactFrequencyArray, gS, true);
+    }
+
+    /**
+     * Same as {@link #computeCnossosPathsFromCutProfile(CutProfile, List, double)}
+     * @param computeFavourable False to skip the favourable paths (when the favourable probability is always 0)
+     */
+    public static List<CnossosPath> computeCnossosPathsFromCutProfile(CutProfile cutProfile , List<Double> exactFrequencyArray,
+                                                                      double gS, boolean computeFavourable) {
         List<CnossosPath> cnossosPaths = new ArrayList<>();
         if(cutProfile.profileType == CutProfile.PROFILE_TYPE.DIRECT ||
                 cutProfile.profileType == CutProfile.PROFILE_TYPE.REFLECTION) {
@@ -209,17 +218,19 @@ public class CnossosPathBuilder {
             CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray,
                     gS, false, pts2D, pts2DGround, cut2DGroundIndex, meanPlane);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
-            // Give a copy of the 2D points to the favourable path, because building a path can
-            // move the height of its reflection points (each path must have its own points)
-            List<Coordinate> pts2DCopy = new ArrayList<>(pts2D.size());
-            for (Coordinate coordinate : pts2D) {
-                pts2DCopy.add(new Coordinate(coordinate));
+            if(computeFavourable) {
+                // Give a copy of the 2D points to the favourable path, because building a path can
+                // move the height of its reflection points (each path must have its own points)
+                List<Coordinate> pts2DCopy = new ArrayList<>(pts2D.size());
+                for (Coordinate coordinate : pts2D) {
+                    pts2DCopy.add(new Coordinate(coordinate));
+                }
+                cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray,
+                        gS, true, pts2DCopy, pts2DGround, cut2DGroundIndex, meanPlane);
+                if(cnossosPath != null) cnossosPaths.add(cnossosPath);
             }
-            cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray,
-                    gS, true, pts2DCopy, pts2DGround, cut2DGroundIndex, meanPlane);
-            if(cnossosPath != null) cnossosPaths.add(cnossosPath);
-        } else if (cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
-                cutProfile.profileType == CutProfile.PROFILE_TYPE.RIGHT) {
+        } else if ((cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
+                cutProfile.profileType == CutProfile.PROFILE_TYPE.RIGHT) && (computeFavourable || !cutProfile.isCurvedPath())) {
             CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray, gS, cutProfile.curvedPath);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
         }

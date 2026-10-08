@@ -286,6 +286,12 @@ public class DefaultTableLoader implements NoiseMapByReceiverMaker.TableLoader {
         scene.cnossosParametersPerPeriod = cnossosParametersPerPeriod;
         scene.defaultCnossosParameters = defaultParameters;
         scene.periodSet.addAll(cnossosParametersPerPeriod.keySet());
+        // The favourable paths are weighted by the favourable probability, skip them when it is 0 for every period
+        boolean favourable = !defaultParameters.getWindRose().isAlwaysZero();
+        for (AttenuationParameters parameters : cnossosParametersPerPeriod.values()) {
+            favourable |= !parameters.getWindRose().isAlwaysZero();
+        }
+        scene.computeFavourablePaths = favourable;
 
         // //////////////////////////////////////////////////////
         // feed freeFieldFinder for fast intersection query

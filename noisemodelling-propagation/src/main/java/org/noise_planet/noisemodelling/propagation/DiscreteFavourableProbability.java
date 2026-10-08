@@ -88,6 +88,16 @@ public class DiscreteFavourableProbability implements FavourableProbability {
     }
 
     @Override
+    public boolean isAlwaysZero() {
+        for (double probability : windRose) {
+            if (probability != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Override
     public String getFavourableProbabilitySettings() {
         return String.join(", ", Arrays.stream(windRose).mapToObj(String::valueOf).toArray(String[]::new));
     }
