@@ -267,8 +267,13 @@ public class PathFinder {
             receiverPropagationEnvelope.expandBy(data.maxSrcDist);
             List<Wall> buildWalls = getReflectionWalls(receiverPointInfo.getCoordinates(), sourceList,
                     receiverPropagationEnvelope);
+            // Only the images that give a reflection path to one of the sources are created
+            List<Coordinate> sourcePositions = new ArrayList<>(sourceList.size());
+            for (SourcePointInfo sourcePointInfo : sourceList) {
+                sourcePositions.add(sourcePointInfo.position);
+            }
             receiverMirrorIndex = new MirrorReceiversCompute(buildWalls, receiverPointInfo.position, data.reflexionOrder,
-                    data.maxSrcDist, data.maxRefDist);
+                    data.maxSrcDist, data.maxRefDist, sourcePositions);
             if(profilerThread != null) {
                 reflectionPreprocessTime = TimeUnit.MILLISECONDS.convert(System.nanoTime() - startReflectionPreprocess,
                         TimeUnit.NANOSECONDS);

@@ -429,4 +429,54 @@ public class TestWallReflection {
         Collections.sort(reflections);
         return reflections;
     }
+
+    /**
+     * Giving the sources to MirrorReceiversCompute does not change the images found for each source
+     */
+    @Test
+    public void testKnownSourcesGiveSameImages() {
+        // 4 x 4 buildings around the receiver and a line of sources above them
+        ProfileBuilder profileBuilder = new ProfileBuilder();
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                double x = i * 30;
+                double y = j * 30;
+                profileBuilder.addBuilding(new Coordinate[]{new Coordinate(x, y, 10), new Coordinate(x + 15, y, 10),
+                        new Coordinate(x + 15, y + 15, 10), new Coordinate(x, y + 15, 10),
+                        new Coordinate(x, y, 10)}, i * 4 + j);
+            }
+        }
+        profileBuilder.finishFeeding();
+        Coordinate receiver = new Coordinate(52, 52, 4);
+        List<Coordinate> sources = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            sources.add(new Coordinate(-100 + i * 35, 200, 60));
+        }
+        List<Wall> walls = profileBuilder.getWallsIn(new Envelope(-500, 500, -500, 500));
+        MirrorReceiversCompute withoutSources = new MirrorReceiversCompute(walls, receiver, 2, 500, 50);
+        MirrorReceiversCompute withSources = new MirrorReceiversCompute(walls, receiver, 2, 500, 50, sources);
+        int secondOrderImages = 0;
+        for (Coordinate source : sources) {
+            List<MirrorReceiver> expected = withoutSources.findCloseMirrorReceivers(source);
+            assertEquals(describeImages(expected), describeImages(withSources.findCloseMirrorReceivers(source)));
+            secondOrderImages += (int) expected.stream().filter(image -> image.getParentMirror() != null).count();
+        }
+        assertTrue(secondOrderImages > 0);
+    }
+
+    /**
+     * @return The receiver position and the wall chain of each image, sorted
+     */
+    private static List<String> describeImages(List<MirrorReceiver> images) {
+        List<String> descriptions = new ArrayList<>();
+        for (MirrorReceiver image : images) {
+            StringBuilder description = new StringBuilder(image.getReceiverPos().toString());
+            for (MirrorReceiver cursor = image; cursor != null; cursor = cursor.getParentMirror()) {
+                description.append(' ').append(cursor.getWall().getLineSegment());
+            }
+            descriptions.add(description.toString());
+        }
+        Collections.sort(descriptions);
+        return descriptions;
+    }
 }
