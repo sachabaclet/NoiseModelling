@@ -183,7 +183,7 @@ public class MirrorReceiversCompute {
                 if (parent != null) {
                     List<Integer> parentWedgeWalls = new ArrayList<>();
                     queryParentWedge(wallsTree.getRoot(), parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
-                            parent, parentWedgeWalls);
+                            new Wedge(parent), buildWalls, parentWedgeWalls);
                     wallCandidates = parentWedgeWalls;
                     parentCone = PreparedGeometryFactory.prepare(parent.getImageReceiverVisibilityCone());
                 }
@@ -192,9 +192,6 @@ public class MirrorReceiversCompute {
                     int wallIndex = parent == null ? idCandidate : (Integer) wallCandidates.get(idCandidate);
                     Wall wall = buildWalls.get(wallIndex);
                     // The tests below only reject images, from the cheapest to the most expensive one
-                    if (parent != null && isOutsideParentWedge(parent, wall.getLineSegment().p0, wall.getLineSegment().p1)) {
-                        continue; // cheap version of the visibility cone test below
-                    }
                     BitSet imageSources = null;
                     if (wallSources != null) {
                         imageSources = (BitSet) wallSources[wallIndex].clone();
@@ -330,62 +327,92 @@ public class MirrorReceiversCompute {
     }
 
     /**
-     * Same walls, in the same order, as the query of the walls tree with the envelope, without the tree nodes that
-     * are outside the wedge of the parent image
+     * Same walls, in the same order, as the query of the walls tree with the envelope, without the tree nodes and the
+     * walls that are outside the wedge of the parent image (a cheap version of the visibility cone test)
      */
-    private static void queryParentWedge(Boundable node, Envelope envelope, MirrorReceiver parent,
+    private static void queryParentWedge(Boundable node, Envelope envelope, Wedge parentWedge, List<Wall> buildWalls,
                                          List<Integer> walls) {
         Envelope bounds = (Envelope) node.getBounds();
         if (bounds == null || !bounds.intersects(envelope)) {
             return;
         }
         if (node instanceof ItemBoundable) {
-            walls.add((Integer) ((ItemBoundable) node).getItem());
-        } else if (!isOutsideParentWedge(parent, new Coordinate(bounds.getMinX(), bounds.getMinY()),
-                new Coordinate(bounds.getMinX(), bounds.getMaxY()), new Coordinate(bounds.getMaxX(), bounds.getMinY()),
-                new Coordinate(bounds.getMaxX(), bounds.getMaxY()))) {
+            Integer wallIndex = (Integer) ((ItemBoundable) node).getItem();
+            if (!parentWedge.excludes(buildWalls.get(wallIndex).getLineSegment())) {
+                walls.add(wallIndex);
+            }
+        } else if (!parentWedge.excludes(bounds)) {
             for (Object child : ((AbstractNode) node).getChildBoundables()) {
-                queryParentWedge((Boundable) child, envelope, parent, walls);
+                queryParentWedge((Boundable) child, envelope, parentWedge, buildWalls, walls);
             }
         }
     }
 
     /**
-     * The visibility cone of an image is inside the wedge from the image through its wall, beyond its wall.
-     * @return True if all the points are outside this wedge of the parent image, by more than a margin that covers
-     * the rounding of the cone vertices: a segment or a box with these points can not intersect the visibility cone
+     * The visibility cone of an image is inside the wedge from the image through its wall, beyond its wall. A segment
+     * or a box outside this wedge, by more than a margin that covers the rounding of the cone vertices, can not
+     * intersect the visibility cone.
      */
-    private static boolean isOutsideParentWedge(MirrorReceiver parent, Coordinate... points) {
-        Coordinate image = parent.getReceiverPos();
-        Coordinate p0 = parent.getWall().getLineSegment().p0;
-        Coordinate p1 = parent.getWall().getLineSegment().p1;
-        // the inside of each side of the wedge is the side of the other end of the wall, beyond the wall the inside
-        // is the side opposite to the image
-        return isOutside(image, p0, Math.signum(cross(image, p0, p1)), points) ||
-                isOutside(image, p1, Math.signum(cross(image, p1, p0)), points) ||
-                isOutside(p0, p1, -Math.signum(cross(p0, p1, image)), points);
-    }
+    private static final class Wedge {
+        private static final double MARGIN = 1e-6;
+        private final double originX;
+        private final double originY;
+        // The three sides of the wedge: unit normals pointing inside and offsets, relative to the origin (the image)
+        private final double[] normalX = new double[3];
+        private final double[] normalY = new double[3];
+        private final double[] offset = new double[3];
 
-    /**
-     * @param insideSide 1 if the inside is on the left of the line (a, b), -1 if on the right, 0 if unknown
-     * @return True if all the points are outside the line (a, b) by more than 1e-6 m
-     */
-    private static boolean isOutside(Coordinate a, Coordinate b, double insideSide, Coordinate[] points) {
-        double margin = 1e-6 * Math.sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
-        if (insideSide == 0) {
+        Wedge(MirrorReceiver image) {
+            originX = image.getReceiverPos().x;
+            originY = image.getReceiverPos().y;
+            Coordinate p0 = image.getWall().getLineSegment().p0;
+            Coordinate p1 = image.getWall().getLineSegment().p1;
+            // the inside of each ray is the side of the other end of the wall
+            setSide(0, originX, originY, p0.x, p0.y, p1);
+            setSide(1, originX, originY, p1.x, p1.y, p0);
+            // beyond the wall the inside is the side opposite to the image
+            setSide(2, p0.x, p0.y, p1.x, p1.y, new Coordinate(2 * p0.x - originX, 2 * p0.y - originY));
+        }
+
+        /** Side of the line (a, b) that contains the inside point */
+        private void setSide(int side, double ax, double ay, double bx, double by, Coordinate inside) {
+            double length = Math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+            // left normal of (a, b), or no side if it is degenerate
+            double nx = length > 0 ? -(by - ay) / length : 0;
+            double ny = length > 0 ? (bx - ax) / length : 0;
+            double insideDistance = nx * (inside.x - ax) + ny * (inside.y - ay);
+            double sign = insideDistance > 0 ? 1 : insideDistance < 0 ? -1 : 0;
+            normalX[side] = sign * nx;
+            normalY[side] = sign * ny;
+            offset[side] = -(normalX[side] * (ax - originX) + normalY[side] * (ay - originY));
+        }
+
+        /** @return Signed distance of the point to the side, positive inside */
+        private double distance(int side, double x, double y) {
+            return normalX[side] * (x - originX) + normalY[side] * (y - originY) + offset[side];
+        }
+
+        boolean excludes(LineSegment segment) {
+            for (int side = 0; side < 3; side++) {
+                if (distance(side, segment.p0.x, segment.p0.y) < -MARGIN &&
+                        distance(side, segment.p1.x, segment.p1.y) < -MARGIN) {
+                    return true;
+                }
+            }
             return false;
         }
-        for (Coordinate point : points) {
-            if (cross(a, b, point) * insideSide >= -margin) {
-                return false;
-            }
-        }
-        return true;
-    }
 
-    /** @return The cross product of (b - a) and (p - a), positive if p is on the left of the line (a, b) */
-    private static double cross(Coordinate a, Coordinate b, Coordinate p) {
-        return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        boolean excludes(Envelope box) {
+            for (int side = 0; side < 3; side++) {
+                // the corner of the box farthest inside
+                double x = normalX[side] > 0 ? box.getMaxX() : box.getMinX();
+                double y = normalY[side] > 0 ? box.getMaxY() : box.getMinY();
+                if (distance(side, x, y) < -MARGIN) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /**
