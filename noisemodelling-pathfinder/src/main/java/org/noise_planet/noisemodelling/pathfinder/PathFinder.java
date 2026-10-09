@@ -273,7 +273,7 @@ public class PathFinder {
                 sourcePositions.add(sourcePointInfo.position);
             }
             receiverMirrorIndex = new MirrorReceiversCompute(buildWalls, receiverPointInfo.position, data.reflexionOrder,
-                    data.maxSrcDist, data.maxRefDist, sourcePositions);
+                    data.maxSrcDist, data.maxRefDist, sourcePositions, data.getCloseReceiverReflectionWallDistance());
             if(profilerThread != null) {
                 reflectionPreprocessTime = TimeUnit.MILLISECONDS.convert(System.nanoTime() - startReflectionPreprocess,
                         TimeUnit.NANOSECONDS);

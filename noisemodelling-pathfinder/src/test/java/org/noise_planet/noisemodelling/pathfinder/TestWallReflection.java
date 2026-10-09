@@ -454,7 +454,7 @@ public class TestWallReflection {
         }
         List<Wall> walls = profileBuilder.getWallsIn(new Envelope(-500, 500, -500, 500));
         MirrorReceiversCompute withoutSources = new MirrorReceiversCompute(walls, receiver, 2, 500, 50);
-        MirrorReceiversCompute withSources = new MirrorReceiversCompute(walls, receiver, 2, 500, 50, sources);
+        MirrorReceiversCompute withSources = new MirrorReceiversCompute(walls, receiver, 2, 500, 50, sources, 0);
         int secondOrderImages = 0;
         for (Coordinate source : sources) {
             List<MirrorReceiver> expected = withoutSources.findCloseMirrorReceivers(source);
@@ -462,6 +462,42 @@ public class TestWallReflection {
             secondOrderImages += (int) expected.stream().filter(image -> image.getParentMirror() != null).count();
         }
         assertTrue(secondOrderImages > 0);
+    }
+
+    /**
+     * A wall close to the receiver creates no first order image, but can still be the other wall of an order 2 image
+     */
+    @Test
+    public void testCloseReceiverWallCreatesNoFirstOrderImage() {
+        ProfileBuilder profileBuilder = new ProfileBuilder();
+        profileBuilder.addBuilding(new Coordinate[]{new Coordinate(-5, 0, 10), new Coordinate(5, 0, 10),
+                new Coordinate(5, 10, 10), new Coordinate(-5, 10, 10), new Coordinate(-5, 0, 10)}, 1);
+        profileBuilder.addBuilding(new Coordinate[]{new Coordinate(-5, -30, 10), new Coordinate(5, -30, 10),
+                new Coordinate(5, -20, 10), new Coordinate(-5, -20, 10), new Coordinate(-5, -30, 10)}, 2);
+        profileBuilder.finishFeeding();
+        // Receiver 0.1 m in front of the wall at y = 0
+        Coordinate receiver = new Coordinate(0, -0.1, 4);
+        Coordinate source = new Coordinate(3, -10, 1);
+        List<Wall> walls = profileBuilder.getWallsIn(new Envelope(-100, 100, -100, 100));
+        List<MirrorReceiver> allImages = new MirrorReceiversCompute(walls, receiver, 2, 500, 50)
+                .findCloseMirrorReceivers(source);
+        List<MirrorReceiver> expected = new ArrayList<>();
+        boolean closeWallAsOtherWall = false;
+        for (MirrorReceiver image : allImages) {
+            MirrorReceiver firstReflection = image;
+            while (firstReflection.getParentMirror() != null) {
+                firstReflection = firstReflection.getParentMirror();
+            }
+            if (firstReflection.getWall().getLineSegment().distance(receiver) >= 0.2) {
+                expected.add(image);
+                closeWallAsOtherWall |= image.getWall().getLineSegment().distance(receiver) < 0.2;
+            }
+        }
+        assertTrue(expected.size() < allImages.size());
+        assertTrue(closeWallAsOtherWall);
+        List<MirrorReceiver> images = new MirrorReceiversCompute(walls, receiver, 2, 500, 50,
+                Collections.singletonList(source), 0.2).findCloseMirrorReceivers(source);
+        assertEquals(describeImages(expected), describeImages(images));
     }
 
     /**

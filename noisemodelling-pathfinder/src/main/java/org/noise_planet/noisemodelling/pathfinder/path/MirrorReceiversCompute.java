@@ -108,7 +108,7 @@ public class MirrorReceiversCompute {
                                   int reflectionOrder, double maximumPropagationDistance,
                                   double maximumDistanceFromWall) {
         this(buildWalls, receiverCoordinates, reflectionOrder, maximumPropagationDistance, maximumDistanceFromWall,
-                null);
+                null, 0);
     }
 
     /**
@@ -116,10 +116,14 @@ public class MirrorReceiversCompute {
      * @param sources Positions of the sources that will be given to {@link #findCloseMirrorReceivers(Coordinate)},
      *                or null if unknown. When known, only the images that give a reflection path to one of these
      *                sources are created.
+     * @param closeReceiverWallDistance If greater than 0, the walls closer than this distance to the receiver do not
+     *                                  create first order images: the paths whose last reflection is on such a wall
+     *                                  are ignored (see Scene#getCloseReceiverReflectionWallDistance)
      */
     public MirrorReceiversCompute(List<Wall> buildWalls, Coordinate receiverCoordinates,
                                   int reflectionOrder, double maximumPropagationDistance,
-                                  double maximumDistanceFromWall, List<Coordinate> sources) {
+                                  double maximumDistanceFromWall, List<Coordinate> sources,
+                                  double closeReceiverWallDistance) {
         GeometryFactory gf = new GeometryFactory();
         this.receiverCoordinate = receiverCoordinates;
         this.buildWalls = buildWalls;
@@ -218,6 +222,9 @@ public class MirrorReceiversCompute {
                             receiverImage = parent.getReceiverPos();
                         }
                     } else {
+                        if (wall.getLineSegment().distance(receiverCoordinates) < closeReceiverWallDistance) {
+                            continue; // the paths whose last reflection is on this wall are ignored
+                        }
                         receiverImage = receiverCoordinates;
                     }
                     //Calculate the coordinate of projection
