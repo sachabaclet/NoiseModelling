@@ -161,7 +161,6 @@ public class MirrorReceiversCompute {
             }
             wallsTree.build();
         }
-        LineIntersector lineIntersector = new RobustLineIntersector();
         ArrayList<MirrorReceiver> parentsToProcess = new ArrayList<>();
         // With known sources: the sources for which every wall of the parent image chain passes the distance test
         ArrayList<BitSet> parentsSources = new ArrayList<>();
@@ -231,9 +230,13 @@ public class MirrorReceiversCompute {
                             !wallPointTest(wall.getLineSegment(), receiverImage)) {
                         continue;
                     }
-                    if (lastDepth && imageSources != null && !hasReflectionPoint(wall.getLineSegment(), rcvMirror,
-                            sources, imageSources, lineIntersector)) {
-                        continue; // every source visitor would reject this image, and it has no children
+                    if (lastDepth && imageSources != null) {
+                        // The image has no children, keep only the sources whose visitor accepts it (the envelope of
+                        // the visibility cone is tested once the cone is built)
+                        removeRejectingSources(new MirrorReceiver(rcvMirror, parent, wall), imageSources, sourceVisitors);
+                        if (imageSources.isEmpty()) {
+                            continue;
+                        }
                     }
                     if(parent != null) {
                         // check if the wall is visible from the previous image receiver
@@ -250,14 +253,8 @@ public class MirrorReceiversCompute {
                     if (imageSources == null) {
                         mirrorReceiverTree.insert(coneEnvelope, receiverResultNext.copyWithoutCone());
                     } else {
-                        // Same visits as the query of the tree with each source position
-                        MirrorReceiver receiverResult = receiverResultNext.copyWithoutCone();
-                        for (int idSource = imageSources.nextSetBit(0); idSource >= 0;
-                             idSource = imageSources.nextSetBit(idSource + 1)) {
-                            if (coneEnvelope.intersects(sources.get(idSource))) {
-                                sourceVisitors[idSource].visitItem(receiverResult);
-                            }
-                        }
+                        addToSourceVisitors(receiverResultNext.copyWithoutCone(), coneEnvelope, imageSources,
+                                sourceVisitors, lastDepth);
                     }
                     nextParentsToProcess.add(receiverResultNext);
                     nextParentsSources.add(imageSources);
@@ -271,6 +268,39 @@ public class MirrorReceiversCompute {
             parentsSources = nextParentsSources;
         }
         mirrorReceiverTree.build();
+    }
+
+    /**
+     * @param image Receiver image
+     * @param sourceIds Sources to test, the sources whose visitor rejects the image are removed
+     */
+    private static void removeRejectingSources(MirrorReceiver image, BitSet sourceIds,
+                                               ReceiverImageVisitor[] sourceVisitors) {
+        // the visitor needs a reflection point on the wall: cheap test, the source must be in the wedge
+        Wedge imageWedge = new Wedge(image);
+        for (int idSource = sourceIds.nextSetBit(0); idSource >= 0; idSource = sourceIds.nextSetBit(idSource + 1)) {
+            if (imageWedge.excludes(sourceVisitors[idSource].source) ||
+                    !sourceVisitors[idSource].isImageOfSource(image)) {
+                sourceIds.clear(idSource);
+            }
+        }
+    }
+
+    /**
+     * Same visits as the query of the image tree with each source position
+     * @param accepted True if the visitors of these sources already accept the image
+     */
+    private static void addToSourceVisitors(MirrorReceiver image, Envelope coneEnvelope, BitSet sourceIds,
+                                            ReceiverImageVisitor[] sourceVisitors, boolean accepted) {
+        for (int idSource = sourceIds.nextSetBit(0); idSource >= 0; idSource = sourceIds.nextSetBit(idSource + 1)) {
+            if (coneEnvelope.intersects(sourceVisitors[idSource].source)) {
+                if (accepted) {
+                    sourceVisitors[idSource].result.add(image);
+                } else {
+                    sourceVisitors[idSource].visitItem(image);
+                }
+            }
+        }
     }
 
     /**
@@ -392,6 +422,15 @@ public class MirrorReceiversCompute {
             return normalX[side] * (x - originX) + normalY[side] * (y - originY) + offset[side];
         }
 
+        boolean excludes(Coordinate point) {
+            for (int side = 0; side < 3; side++) {
+                if (distance(side, point.x, point.y) < -MARGIN) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         boolean excludes(LineSegment segment) {
             for (int side = 0; side < 3; side++) {
                 if (distance(side, segment.p0.x, segment.p0.y) < -MARGIN &&
@@ -413,21 +452,6 @@ public class MirrorReceiversCompute {
             }
             return false;
         }
-    }
-
-    /**
-     * First test of the source visitor: the segment from the receiver image to the source must cross the wall
-     * @return True if this test passes for at least one of the sources
-     */
-    private static boolean hasReflectionPoint(LineSegment wall, Coordinate receiverImage, List<Coordinate> sources,
-                                              BitSet sourceIds, LineIntersector lineIntersector) {
-        for (int idSource = sourceIds.nextSetBit(0); idSource >= 0; idSource = sourceIds.nextSetBit(idSource + 1)) {
-            lineIntersector.computeIntersection(wall.p0, wall.p1, receiverImage, sources.get(idSource));
-            if (lineIntersector.hasIntersection()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -554,10 +578,20 @@ public class MirrorReceiversCompute {
         @Override
         public void visitItem(Object item) {
             visitedNode++;
+            MirrorReceiver receiverImage = (MirrorReceiver) item;
+            if (isImageOfSource(receiverImage)) {
+                result.add(receiverImage);
+            }
+        }
+
+        /**
+         * @param receiverImage Receiver image
+         * @return True if the receiver image can give a reflection path from the source to the receiver
+         */
+        boolean isImageOfSource(MirrorReceiver receiverImage) {
             // try to exclude walls without taking into account the topography and other factors
             // we intentionnaly do not check for wall height here as meteo conditions might virtually raise or lower the wall.
 
-            MirrorReceiver receiverImage = (MirrorReceiver) item;
             // Check propagation distance
             if(receiverImage.getReceiverPos().distance3D(source) < maximumPropagationDistance) {
                 // Check distance of walls
@@ -567,7 +601,7 @@ public class MirrorReceiversCompute {
                     final Wall currentWall = currentReceiverImage.getWall();
                     final LineSegment currentWallLineSegment = currentWall.getLineSegment();
                     if (currentWallLineSegment.distance(sourceReceiverSegment) > maximumDistanceFromSegment) {
-                        return;
+                        return false;
                     }
                     // Check if reflection is placed on the wall segment
                     LineSegment srcMirrRcvLine = new LineSegment(currentReceiverImage.getReceiverPos(), reflectionPoint);
@@ -576,7 +610,7 @@ public class MirrorReceiversCompute {
                             srcMirrRcvLine.p0, srcMirrRcvLine.p1);
                     if(!li.hasIntersection()) {
                         // No reflection on this wall
-                        return;
+                        return false;
                     } else {
                         // Set the height for the reflection point.
                         // intersect3D's height is actually sitting vertically between the two lines.
@@ -589,8 +623,9 @@ public class MirrorReceiversCompute {
                     currentReceiverImage = currentReceiverImage.getParentMirror();
                 }
                 // not rejected
-                result.add(receiverImage);
+                return true;
             }
+            return false;
         }
     }
 }
