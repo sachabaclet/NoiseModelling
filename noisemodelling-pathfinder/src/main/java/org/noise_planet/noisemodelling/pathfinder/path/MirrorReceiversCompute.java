@@ -149,16 +149,7 @@ public class MirrorReceiversCompute {
                         receiverCoordinates, maximumDistanceFromWall, maximumPropagationDistance);
                 visitorBySource.put(sources.get(idSource), sourceVisitors[idSource]);
             }
-            wallSources = new BitSet[buildWalls.size()];
-            for (int idWall = 0; idWall < buildWalls.size(); idWall++) {
-                wallSources[idWall] = new BitSet(sources.size());
-                for (int idSource = 0; idSource < sources.size(); idSource++) {
-                    if (buildWalls.get(idWall).getLineSegment().distance(sourceVisitors[idSource].sourceReceiverSegment)
-                            <= maximumDistanceFromWall) {
-                        wallSources[idWall].set(idSource);
-                    }
-                }
-            }
+            wallSources = computeWallSources(buildWalls, receiverCoordinates, sourceVisitors, maximumDistanceFromWall);
         }
         STRtree wallsTree = null;
         if (reflectionOrder > 1) {
@@ -283,6 +274,59 @@ public class MirrorReceiversCompute {
             parentsSources = nextParentsSources;
         }
         mirrorReceiverTree.build();
+    }
+
+    /**
+     * @return For each wall, the sources for which the wall is not farther than maximumDistanceFromWall from the
+     * source-receiver segment (the distance test of the source visitors)
+     */
+    private static BitSet[] computeWallSources(List<Wall> walls, Coordinate receiver,
+                                               ReceiverImageVisitor[] sourceVisitors, double maximumDistanceFromWall) {
+        // Cheap pre-test of the distance test, done in the frame of each receiver-source segment
+        double[] directionX = new double[sourceVisitors.length];
+        double[] directionY = new double[sourceVisitors.length];
+        double[] length = new double[sourceVisitors.length];
+        for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
+            Coordinate source = sourceVisitors[idSource].source;
+            length[idSource] = receiver.distance(source);
+            if (length[idSource] > 0) {
+                directionX[idSource] = (source.x - receiver.x) / length[idSource];
+                directionY[idSource] = (source.y - receiver.y) / length[idSource];
+            }
+        }
+        BitSet[] wallSources = new BitSet[walls.size()];
+        for (int idWall = 0; idWall < walls.size(); idWall++) {
+            wallSources[idWall] = new BitSet(sourceVisitors.length);
+            LineSegment wallSegment = walls.get(idWall).getLineSegment();
+            for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
+                if (!isFarFromSegment(wallSegment, receiver, directionX[idSource], directionY[idSource],
+                        length[idSource], maximumDistanceFromWall) &&
+                        wallSegment.distance(sourceVisitors[idSource].sourceReceiverSegment) <= maximumDistanceFromWall) {
+                    wallSources[idWall].set(idSource);
+                }
+            }
+        }
+        return wallSources;
+    }
+
+    /**
+     * Cheap test of the distance between a wall and a segment
+     * @param origin First end of the segment
+     * @param directionX Unit direction of the segment, or 0 if its length is 0
+     * @param length Length of the segment
+     * @return True if both ends of the wall are on the same side of the line of the segment, or beyond the same end
+     * of the segment, farther than the distance (plus 1e-6 m so that the rounding can not exclude a wall at this
+     * distance)
+     */
+    private static boolean isFarFromSegment(LineSegment wall, Coordinate origin, double directionX, double directionY,
+                                            double length, double distance) {
+        double limit = distance + 1e-6;
+        double along0 = directionX * (wall.p0.x - origin.x) + directionY * (wall.p0.y - origin.y);
+        double along1 = directionX * (wall.p1.x - origin.x) + directionY * (wall.p1.y - origin.y);
+        double across0 = directionX * (wall.p0.y - origin.y) - directionY * (wall.p0.x - origin.x);
+        double across1 = directionX * (wall.p1.y - origin.y) - directionY * (wall.p1.x - origin.x);
+        return (across0 > limit && across1 > limit) || (across0 < -limit && across1 < -limit) ||
+                (along0 < -limit && along1 < -limit) || (along0 > length + limit && along1 > length + limit);
     }
 
     /**
