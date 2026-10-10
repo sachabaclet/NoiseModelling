@@ -25,7 +25,6 @@ import static org.noise_planet.noisemodelling.pathfinder.PathFinder.filterPoints
 
 
 public final class BuildingIntersectionPathVisitor implements ItemVisitor {
-    Set<Integer> itemProcessed = new HashSet<>();
     Coordinate p1;
     Coordinate p2;
     boolean left;
@@ -85,7 +84,6 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
      */
     public void setIntersectionLine(LineSegment segment) {
         this.intersectionLine = segment;
-        itemProcessed.clear();
     }
 
     /**
@@ -99,7 +97,6 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
         this.left = left;
         this.curved = curved;
         this.input = input;
-        itemProcessed.clear();
         pushedBuildingsWideAnglePoints.clear();
         pushedWallsPoints.clear();
     }
@@ -134,16 +131,13 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
     @Override
     public void visitItem(Object item) {
         int id = (Integer) item;
-        if(!itemProcessed.contains(id)) {
-            itemProcessed.add(id);
-            LineObstruction processedObstruction = profileBuilder.getProcessedObstructions().get(id);
-            // Check if the wall intersects with the segment (only in 2D so it is useless to have a curved path)
-            if(processedObstruction.getLineSegment().distance(intersectionLine) < ProfileBuilder.epsilon) {
-                if (!candidatesCollected) {
-                    acceptedCandidates.add(id);
-                }
-                addItem(id);
+        LineObstruction processedObstruction = profileBuilder.getProcessedObstructions().get(id);
+        // Check if the wall intersects with the segment (only in 2D so it is useless to have a curved path)
+        if(processedObstruction.getLineSegment().distance(intersectionLine) < ProfileBuilder.epsilon) {
+            if (!candidatesCollected) {
+                acceptedCandidates.add(id);
             }
+            addItem(id);
         }
     }
 
