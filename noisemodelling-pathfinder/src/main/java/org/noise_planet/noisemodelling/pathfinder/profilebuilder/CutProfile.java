@@ -391,17 +391,24 @@ public class CutProfile {
         if(coordinates2d.size() != cutPoints.size()) {
             throw new IllegalArgumentException("Coordinates size must be equal to cut points size");
         }
+        List<Integer> upperHullIndices = getUpperHullIndices(coordinates2d, ignoreWall);
+        if(upperHullIndices != null) {
+            return upperHullIndices;
+        }
+        return getConvexHullIndicesJts(coordinates2d, ignoreWall);
+    }
+
+    /**
+     * Same as {@link #getConvexHullIndices(List, boolean)}, computed with the JTS ConvexHull
+     */
+    List<Integer> getConvexHullIndicesJts(List<Coordinate> coordinates2d, boolean ignoreWall) {
         // Filter out points that are below the line segment
         List<Coordinate> convexHullInput = new ArrayList<>();
         // Add source position
         convexHullInput.add(coordinates2d.getFirst());
         // Add valid diffraction point, building/walls/dem
         for (int idPoint=1; idPoint < cutPoints.size() - 1; idPoint++) {
-            CutPoint currentPoint = cutPoints.get(idPoint);
-            // We only add the point at the top of the wall, not the point at the bottom of the wall
-            if(currentPoint instanceof CutPointTopography
-                    || (currentPoint instanceof CutPointWall
-                    && Double.compare(currentPoint.getCoordinate().z, currentPoint.getzGround()) != 0 && !ignoreWall)) {
+            if(isConvexHullInput(idPoint, ignoreWall)) {
                 convexHullInput.add(coordinates2d.get(idPoint));
             }
         }
@@ -454,6 +461,128 @@ public class CutProfile {
             hullIndices.add(coordinateIndex.getOrDefault(coordinate, -1));
         }
         return hullIndices;
+    }
+
+    private boolean isConvexHullInput(int idPoint, boolean ignoreWall) {
+        CutPoint currentPoint = cutPoints.get(idPoint);
+        // We only add the point at the top of the wall, not the point at the bottom of the wall
+        return currentPoint instanceof CutPointTopography
+                || (currentPoint instanceof CutPointWall
+                && Double.compare(currentPoint.getCoordinate().z, currentPoint.getzGround()) != 0 && !ignoreWall);
+    }
+
+    /**
+     * Same result as {@link #getConvexHullIndicesJts(List, boolean)} in one pass. The points are sorted by distance
+     * from the source, so the hull from the source to the receiver is the upper hull (monotone chain). It uses the
+     * same orientation test as JTS, keeps only the hull vertices like JTS, and maps each vertex to the first profile
+     * point at the same position like the JTS path.
+     * @return The hull indices, or null in the degenerate cases where JTS gives another result
+     */
+    List<Integer> getUpperHullIndices(List<Coordinate> coordinates2d, boolean ignoreWall) {
+        Coordinate source = coordinates2d.getFirst();
+        Coordinate receiver = coordinates2d.getLast();
+        int last = coordinates2d.size() - 1;
+        if(!(source.x < receiver.x)) {
+            // the chain goes from the source to the receiver
+            return null;
+        }
+        int[] hull = new int[last + 1];
+        int hullSize = 0;
+        int inputSize = 0;
+        boolean aboveReceiver = false;
+        boolean belowReceiver = false;
+        // first points of minimal y and of minimal x + y (two points of the inner octagon of JTS)
+        Coordinate minY = source;
+        Coordinate minXPlusY = source;
+        for (int idPoint = 0; idPoint <= last; idPoint++) {
+            Coordinate p = coordinates2d.get(idPoint);
+            if(idPoint > 0 && !(p.x >= coordinates2d.get(idPoint - 1).x)) {
+                // not sorted by distance from the source
+                return null;
+            }
+            if(idPoint > 0 && idPoint < last && !isConvexHullInput(idPoint, ignoreWall)) {
+                continue;
+            }
+            if(!isHullOrdinate(p.x) || !isHullOrdinate(p.y)) {
+                return null;
+            }
+            if(idPoint > 0 && p.x == source.x && p.y > source.y) {
+                // a point above the source at the same distance: JTS goes up to the highest one first
+                return null;
+            }
+            if(idPoint < last && p.x == receiver.x) {
+                aboveReceiver |= p.y > receiver.y;
+                belowReceiver |= p.y < receiver.y;
+            }
+            if(p.y < minY.y) {
+                minY = p;
+            }
+            if(p.x + p.y < minXPlusY.x + minXPlusY.y) {
+                minXPlusY = p;
+            }
+            inputSize++;
+            while (hullSize >= 2 && org.locationtech.jts.algorithm.Orientation.index(
+                    coordinates2d.get(hull[hullSize - 2]), coordinates2d.get(hull[hullSize - 1]), p) >= 0) {
+                hullSize--;
+            }
+            hull[hullSize++] = idPoint;
+        }
+        if(aboveReceiver && belowReceiver) {
+            // the receiver is not a hull vertex, JTS removes it
+            return null;
+        }
+        if(inputSize > 50 && minY.x == receiver.x && minXPlusY.x == receiver.x) {
+            // JTS may keep duplicated points when its inner octagon is flat
+            return null;
+        }
+        if(hullSize == 2 && inputSize > 2 && isAligned(coordinates2d, ignoreWall)) {
+            // JTS gives a line
+            return null;
+        }
+        List<Integer> hullIndices = new ArrayList<>(hullSize);
+        for (int i = 0; i < hullSize; i++) {
+            hullIndices.add(getFirstEqualCoordinateIndex(coordinates2d, hull[i]));
+        }
+        return hullIndices;
+    }
+
+    /**
+     * @return False for an ordinate JTS may not process like the upper hull: not finite, so large that the
+     * orientation test overflows, or negative zero
+     */
+    private static boolean isHullOrdinate(double value) {
+        return Math.abs(value) < 1e100 && Double.doubleToRawLongBits(value) != Long.MIN_VALUE;
+    }
+
+    /**
+     * @return True if all the convex hull input points are on the source receiver line
+     */
+    private boolean isAligned(List<Coordinate> coordinates2d, boolean ignoreWall) {
+        Coordinate source = coordinates2d.getFirst();
+        Coordinate receiver = coordinates2d.getLast();
+        for (int idPoint = 1; idPoint < coordinates2d.size() - 1; idPoint++) {
+            if(isConvexHullInput(idPoint, ignoreWall) &&
+                    org.locationtech.jts.algorithm.Orientation.index(source, receiver, coordinates2d.get(idPoint)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @param coordinates2d Coordinates sorted by x
+     * @return The lowest index of a coordinate equal to the coordinate at the given index, as a HashMap key
+     */
+    private static int getFirstEqualCoordinateIndex(List<Coordinate> coordinates2d, int index) {
+        Coordinate coordinate = coordinates2d.get(index);
+        int firstIndex = index;
+        for (int i = index - 1; i >= 0 && coordinates2d.get(i).x == coordinate.x; i--) {
+            Coordinate other = coordinates2d.get(i);
+            if(other.y == coordinate.y && other.hashCode() == coordinate.hashCode()) {
+                firstIndex = i;
+            }
+        }
+        return firstIndex;
     }
 
     /**
