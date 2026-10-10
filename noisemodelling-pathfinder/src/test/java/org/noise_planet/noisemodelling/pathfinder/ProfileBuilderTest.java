@@ -17,6 +17,9 @@ import org.locationtech.jts.io.WKTReader;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.Building;
 import org.noise_planet.noisemodelling.pathfinder.path.Scene;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPoint;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointDistanceComparator;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointReceiver;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointSource;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutProfile;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.ProfileBuilder;
 import org.slf4j.Logger;
@@ -392,5 +395,37 @@ public class ProfileBuilderTest {
             }
         }
         assertTrue(pruned > 0);
+    }
+
+    /**
+     * insertCutPoint into sorted cut points (merge) gives the order of the stable sort of all the points
+     */
+    @Test
+    public void testInsertCutPointIntoSortedPoints() {
+        Random random = new Random(7);
+        CutPointDistanceComparator comparator = new CutPointDistanceComparator(new Coordinate(0, 0));
+        for (int test = 0; test < 200; test++) {
+            CutPointSource source = new CutPointSource(new Coordinate(0, 0));
+            CutPointReceiver receiver = new CutPointReceiver(new Coordinate(100, 0));
+            // integer coordinates for many points at the same distance, some beyond the receiver
+            List<CutPoint> sortedPoints = new ArrayList<>();
+            CutPoint[] insertedPoints = new CutPoint[random.nextInt(10)];
+            for (int i = random.nextInt(10); i > 0; i--) {
+                sortedPoints.add(new CutPoint(new Coordinate(random.nextInt(120), random.nextInt(3))));
+            }
+            for (int i = 0; i < insertedPoints.length; i++) {
+                insertedPoints[i] = new CutPoint(new Coordinate(random.nextInt(120), random.nextInt(3)));
+            }
+            sortedPoints.sort(comparator);
+            List<CutPoint> expected = new ArrayList<>(Arrays.asList(insertedPoints));
+            expected.addAll(sortedPoints);
+            expected.sort(comparator);
+            expected.add(0, source);
+            expected.add(receiver);
+            CutProfile profile = new CutProfile(source, receiver);
+            profile.cutPoints.addAll(1, sortedPoints);
+            profile.insertCutPoint(true, insertedPoints);
+            assertEquals(expected, profile.cutPoints);
+        }
     }
 }
