@@ -25,7 +25,6 @@ import static org.noise_planet.noisemodelling.pathfinder.PathFinder.filterPoints
 
 
 public final class BuildingIntersectionPathVisitor implements ItemVisitor {
-    Set<Integer> itemProcessed = new HashSet<>();
     Coordinate p1;
     Coordinate p2;
     boolean left;
@@ -44,6 +43,7 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
     // on the side, and the curved rejection does not depend on the side either
     List<Integer> acceptedCandidates = new ArrayList<>();
     boolean candidatesCollected = false;
+    // key: the wall id for a wall, -1 - the building id for a building (its cut does not depend on the wall)
     Map<Integer, List<Coordinate>> planeCutCache = new HashMap<>();
     Map<Integer, Boolean> curvedRejectCache = new HashMap<>();
 
@@ -85,7 +85,6 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
      */
     public void setIntersectionLine(LineSegment segment) {
         this.intersectionLine = segment;
-        itemProcessed.clear();
     }
 
     /**
@@ -99,7 +98,6 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
         this.left = left;
         this.curved = curved;
         this.input = input;
-        itemProcessed.clear();
         pushedBuildingsWideAnglePoints.clear();
         pushedWallsPoints.clear();
     }
@@ -134,16 +132,13 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
     @Override
     public void visitItem(Object item) {
         int id = (Integer) item;
-        if(!itemProcessed.contains(id)) {
-            itemProcessed.add(id);
-            LineObstruction processedObstruction = profileBuilder.getProcessedObstructions().get(id);
-            // Check if the wall intersects with the segment (only in 2D so it is useless to have a curved path)
-            if(processedObstruction.getLineSegment().distance(intersectionLine) < ProfileBuilder.epsilon) {
-                if (!candidatesCollected) {
-                    acceptedCandidates.add(id);
-                }
-                addItem(id);
+        LineObstruction processedObstruction = profileBuilder.getProcessedObstructions().get(id);
+        // Check if the wall intersects with the segment (only in 2D so it is useless to have a curved path)
+        if(processedObstruction.getLineSegment().distance(intersectionLine) < ProfileBuilder.epsilon) {
+            if (!candidatesCollected) {
+                acceptedCandidates.add(id);
             }
+            addItem(id);
         }
     }
 
@@ -169,12 +164,13 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
                 // weird building, no diffraction point
                 return;
             }
-            if(curved && isCurvedRayBelowRoof(id, roofPoints)) {
+            int buildingKey = -1 - processedWall.originId;
+            if(curved && isCurvedRayBelowRoof(buildingKey, roofPoints)) {
                 // The building roof is below the curved ray
                 return;
             }
             // Create a cut of the building volume
-            roofPoints = cutRoofPointsWithPlaneCached(id, roofPoints);
+            roofPoints = cutRoofPointsWithPlaneCached(buildingKey, roofPoints);
 
             // remove points that are not on the correct side of the line p1Top2 (use only x,y coordinates)
             roofPoints = filterPointsBySide(p1Top2, left, roofPoints);
@@ -215,7 +211,7 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
     /**
      * Cut of the building volume with the top points z moved to the bottom following the
      * curved coordinate system formulae, empty when the top is below the curved ray.
-     * The result only depends on the wall, so it is computed once per wall.
+     * The result only depends on the wall or building, so it is computed once per wall or building.
      */
     private boolean isCurvedRayBelowRoof(int id, List<Coordinate> roofPoints) {
         Boolean curvedRejected = curvedRejectCache.get(id);
@@ -231,7 +227,7 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
 
     /**
      * Cut of the building volume with the vertical plane between p1 and p2. The result only
-     * depends on the wall, so it is computed once per wall. Callers must not change the
+     * depends on the wall or building, so it is computed once per wall or building. Callers must not change the
      * returned list.
      */
     private List<Coordinate> cutRoofPointsWithPlaneCached(int id, List<Coordinate> roofPoints) {

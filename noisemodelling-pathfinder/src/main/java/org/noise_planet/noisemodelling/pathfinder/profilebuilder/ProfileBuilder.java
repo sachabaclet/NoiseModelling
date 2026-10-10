@@ -13,6 +13,9 @@ import org.locationtech.jts.algorithm.Angle;
 import org.locationtech.jts.algorithm.CGAlgorithms3D;
 import org.locationtech.jts.algorithm.RobustLineIntersector;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.index.strtree.AbstractNode;
+import org.locationtech.jts.index.strtree.Boundable;
+import org.locationtech.jts.index.strtree.ItemBoundable;
 import org.locationtech.jts.index.strtree.STRtree;
 import org.locationtech.jts.io.WKTWriter;
 import org.locationtech.jts.math.Vector2D;
@@ -32,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import java.text.DecimalFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -99,6 +103,9 @@ public class ProfileBuilder {
 
     /** List of ground effects. */
     private final List<GroundAbsorption> groundAbsorptions = new ArrayList<>();
+    /** Memoized touches predicate between two ground effects, the key is the pair of indexes (two threads may
+     * compute the same entry, they store the same value) */
+    private final Map<Long, Boolean> groundAbsorptionsTouches = new ConcurrentHashMap<>();
 
     /** Receivers .*/
     private final List<Coordinate> receivers = new ArrayList<>();
@@ -801,6 +808,10 @@ public class ProfileBuilder {
                     LineSegment lineSegment = new LineSegment(coords[i], coords[i + 1]);
                     Wall w = (Wall) new Wall(lineSegment, j, IntersectionType.BUILDING).setProcessedObstructionIndex(processedObstructions.size());
                     w.setPrimaryKey(building.getPrimaryKey());
+                    // exterior polygon segments are CW, so the exterior of the polygon is on the left side of the vector
+                    // it works also with polygon holes as interiors are CCW
+                    w.exteriorOffset = Vector2D.create(lineSegment.p0, lineSegment.p1).rotate(LEFT_SIDE).normalize()
+                            .multiply(MILLIMETER);
                     w.copyAlphas(building);
                     processedObstructions.add(w);
                     rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
@@ -1070,11 +1081,7 @@ public class ProfileBuilder {
         newCutPoints.add(wallCutPoint);
         double zRayReceiverSource = Vertex.interpolateZ(intersection, fullLine.p0, fullLine.p1);
         // add a point at the bottom of the building on the exterior side of the building
-        Vector2D facetVector = Vector2D.create(facetLine.line.p0, facetLine.line.p1);
-        // exterior polygon segments are CW, so the exterior of the polygon is on the left side of the vector
-        // it works also with polygon holes as interiors are CCW
-        Vector2D exteriorVector = facetVector.rotate(LEFT_SIDE).normalize().multiply(MILLIMETER);
-        Coordinate exteriorPoint = exteriorVector.add(Vector2D.create(intersection)).toCoordinate();
+        Coordinate exteriorPoint = facetLine.exteriorOffset.add(Vector2D.create(intersection)).toCoordinate();
         // exterior point closer to source so we know that we enter the building
         if(JTSUtility.dist2D(exteriorPoint, fullLine.p0) < JTSUtility.dist2D(intersection, fullLine.p0)) {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_ENTER;
@@ -1124,7 +1131,13 @@ public class ProfileBuilder {
                 GroundAbsorption nextGroundAbsorption = groundAbsorptions.get(groundSurfaceIndex);
                 // if the interior of the two ground surfaces overlaps we add the ground point
                 // (as we will not encounter the side of this other ground surface)
-                if (!nextGroundAbsorption.geom.touches(groundAbsorption.geom)) {
+                long touchesKey = ((long) groundSurfaceIndex << 32) | (facetLine.getOriginId() & 0xFFFFFFFFL);
+                Boolean touches = groundAbsorptionsTouches.get(touchesKey);
+                if (touches == null) {
+                    touches = nextGroundAbsorption.geom.touches(groundAbsorption.geom);
+                    groundAbsorptionsTouches.put(touchesKey, touches);
+                }
+                if (!touches) {
                     newCutPoints.add(new CutPointGroundEffect(groundSurfaceIndex,
                             afterIntersectionPoint.getCoordinate(),
                             nextGroundAbsorption.getCoefficient()));
@@ -1141,25 +1154,30 @@ public class ProfileBuilder {
      *                                        receiverCoordinate, stop computing and set #CutProfile.hasBuildingInter to buildings in profile data
      */
     private void addGroundBuildingCutPts(LineSegment fullLine, CutProfile profile, boolean stopAtObstacleOverSourceReceiver) {
-        // Collect all objects where envelope intersects all sub-segments of fullLine
-        Set<Integer> processed = new HashSet<>();
-
-        // Segmented fullLine, this is the query for rTree indexes
-        // Split line into segments for structures based on RTree in order to limit the number of queries
-        // (for large area of the line segment envelope)
+        // Segmented fullLine, the objects are processed in the order of the rTree queries made with the envelope of
+        // each segment: by first segment whose envelope intersects the object envelope, then in tree order.
+        // A single query lists the objects near fullLine (the others cannot intersect it), in tree order.
         List<LineSegment> lines = splitSegment(fullLine.p0, fullLine.p1, maxLineLength);
+        List<ItemBoundable> nearItems = queryNearLine(new Envelope(fullLine.p0, fullLine.p1), fullLine);
+        int[] firstLines = new int[nearItems.size()];
+        for (int k = 0; k < firstLines.length; k++) {
+            Envelope itemEnvelope = (Envelope) nearItems.get(k).getBounds();
+            while (firstLines[k] < lines.size()
+                    && !itemEnvelope.intersects(lines.get(firstLines[k]).p0, lines.get(firstLines[k]).p1)) {
+                firstLines[k]++;
+            }
+        }
         List<CutPoint> newCutPoints = new ArrayList<>();
         // getIntersection returns an internal coordinate, it must be copied before the intersector is reused
         RobustLineIntersector intersector = new RobustLineIntersector();
         try {
             for (int j = 0; j < lines.size()
                     && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
-                LineSegment line = lines.get(j);
-                for (Object result : rtree.query(new Envelope(line.p0, line.p1))) {
-                    if (!(result instanceof Integer) || processed.contains((Integer) result)) {
+                for (int k = 0; k < firstLines.length; k++) {
+                    Object result = nearItems.get(k).getItem();
+                    if (firstLines[k] != j || !(result instanceof Integer)) {
                         continue;
                     }
-                    processed.add((Integer) result);
                     int i = (Integer) result;
                     LineObstruction facetLine = processedObstructions.get(i);
                     intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
@@ -1206,6 +1224,60 @@ public class ProfileBuilder {
         }
     }
 
+    /**
+     * Same items, in the same order, as rtree.query(envelope), without the nodes and items whose envelope is farther
+     * than one millimeter from the line of the segment, on one side: they cannot intersect the segment.
+     */
+    public List<ItemBoundable> queryNearLine(Envelope envelope, LineSegment line) {
+        List<ItemBoundable> items = new ArrayList<>();
+        AbstractNode root = rtree.getRoot();
+        if (!root.isEmpty() && ((Envelope) root.getBounds()).intersects(envelope)) {
+            queryNearLine(root, envelope, line, items);
+        }
+        return items;
+    }
+
+    private static void queryNearLine(AbstractNode node, Envelope envelope, LineSegment line,
+                                      List<ItemBoundable> items) {
+        for (Object child : node.getChildBoundables()) {
+            Envelope bounds = (Envelope) ((Boundable) child).getBounds();
+            if (!bounds.intersects(envelope) || isFarFromLine(bounds, line)) {
+                continue;
+            }
+            if (child instanceof AbstractNode) {
+                queryNearLine((AbstractNode) child, envelope, line, items);
+            } else {
+                items.add((ItemBoundable) child);
+            }
+        }
+    }
+
+    /**
+     * @return True if the four corners of the envelope are on the same side of the line of the segment, farther than
+     * one millimeter from it
+     */
+    private static boolean isFarFromLine(Envelope envelope, LineSegment line) {
+        int side = sideOfLine(line, envelope.getMinX(), envelope.getMinY());
+        return side != 0 && sideOfLine(line, envelope.getMaxX(), envelope.getMinY()) == side
+                && sideOfLine(line, envelope.getMinX(), envelope.getMaxY()) == side
+                && sideOfLine(line, envelope.getMaxX(), envelope.getMaxY()) == side;
+    }
+
+    /**
+     * @return 1 or -1 if the point is on the left or on the right of the line of the segment, farther than one
+     * millimeter from it, 0 otherwise (the margin is many orders of magnitude above the rounding errors)
+     */
+    private static int sideOfLine(LineSegment line, double x, double y) {
+        double dx = line.p1.x - line.p0.x;
+        double dy = line.p1.y - line.p0.y;
+        // distance of the point from the line multiplied by the segment length
+        double cross = dx * (y - line.p0.y) - dy * (x - line.p0.x);
+        if (cross * cross <= MILLIMETER * MILLIMETER * (dx * dx + dy * dy)) {
+            return 0;
+        }
+        return cross > 0 ? 1 : -1;
+    }
+
     Coordinate[] getTriangleVertices(int triIndex) {
         final Triangle tri = topoTriangles.get(triIndex);
         return new Coordinate[] {this.vertices.get(tri.getA()), this.vertices.get(tri.getB()), this.vertices.get(tri.getC())};
@@ -1232,10 +1304,15 @@ public class ProfileBuilder {
         final Coordinate aTri = this.vertices.get(tri.getA());
         final Coordinate bTri = this.vertices.get(tri.getB());
         final Coordinate cTri = this.vertices.get(tri.getC());
+        // a side with its two vertices on the same side of the propagation line, farther than one millimeter, is
+        // farther than TRIANGLE_INTERSECTION_EPSILON from it: it is skipped
+        final int aSide = sideOfLine(propagationLine, aTri.x, aTri.y);
+        final int bSide = sideOfLine(propagationLine, bTri.x, bTri.y);
+        final int cSide = sideOfLine(propagationLine, cTri.x, cTri.y);
         double distline_line;
         // Intersection First Side
         idNeighbor = triNeighbors.get(2);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((aSide == 0 || aSide != bSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(aTri, bTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
@@ -1253,7 +1330,7 @@ public class ProfileBuilder {
         }
         // Intersection Second Side
         idNeighbor = triNeighbors.get(0);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((bSide == 0 || bSide != cSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(bTri, cTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
@@ -1271,7 +1348,7 @@ public class ProfileBuilder {
         }
         // Intersection Third Side
         idNeighbor = triNeighbors.get(1);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((cSide == 0 || cSide != aSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(cTri, aTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
@@ -1649,10 +1726,15 @@ public class ProfileBuilder {
         // Update intersection line test in the rtree visitor
         try {
             List<LineSegment> lines = splitSegment(p1, p2, maxLineLength);
+            LineSegment fullLine = new LineSegment(p1, p2);
             for(LineSegment segment : lines) {
                 visitor.setIntersectionLine(segment);
                 Envelope pathEnv = new Envelope(segment.p0, segment.p1);
-                rtree.query(pathEnv, visitor);
+                // same visits as rtree.query(pathEnv, visitor) without the walls far from the line, that the visitor
+                // would reject (it keeps the walls closer than epsilon to the segment)
+                for (ItemBoundable item : queryNearLine(pathEnv, fullLine)) {
+                    visitor.visitItem(item.getItem());
+                }
             }
         } catch (IllegalStateException ex) {
             //Ignore

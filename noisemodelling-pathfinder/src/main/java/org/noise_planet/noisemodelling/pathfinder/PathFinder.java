@@ -267,8 +267,13 @@ public class PathFinder {
             receiverPropagationEnvelope.expandBy(data.maxSrcDist);
             List<Wall> buildWalls = getReflectionWalls(receiverPointInfo.getCoordinates(), sourceList,
                     receiverPropagationEnvelope);
+            // Only the images that give a reflection path to one of the sources are created
+            List<Coordinate> sourcePositions = new ArrayList<>(sourceList.size());
+            for (SourcePointInfo sourcePointInfo : sourceList) {
+                sourcePositions.add(sourcePointInfo.position);
+            }
             receiverMirrorIndex = new MirrorReceiversCompute(buildWalls, receiverPointInfo.position, data.reflexionOrder,
-                    data.maxSrcDist, data.maxRefDist);
+                    data.maxSrcDist, data.maxRefDist, sourcePositions, data.getCloseReceiverReflectionWallDistance());
             if(profilerThread != null) {
                 reflectionPreprocessTime = TimeUnit.MILLISECONDS.convert(System.nanoTime() - startReflectionPreprocess,
                         TimeUnit.NANOSECONDS);
@@ -304,8 +309,9 @@ public class PathFinder {
 
     /**
      * A wall can only reflect if it is closer than maxRefDist to a source-receiver segment
-     * (see MirrorReceiversCompute.findCloseMirrorReceivers). All these segments are inside the convex hull of the
-     * receiver and of the sources, so the walls farther than maxRefDist from this hull are not returned.
+     * (see MirrorReceiversCompute.findCloseMirrorReceivers). All these segments are inside the envelope of the
+     * receiver and of the sources, so only the walls of this envelope expanded by maxRefDist are returned.
+     * MirrorReceiversCompute does the exact distance test with each source-receiver segment.
      * @param receiver Receiver position
      * @param sources Sources in range of the receiver
      * @param receiverPropagationEnvelope Receiver position expanded by the maximum propagation distance
@@ -313,22 +319,12 @@ public class PathFinder {
      */
     private List<Wall> getReflectionWalls(Coordinate receiver, List<SourcePointInfo> sources,
                                           Envelope receiverPropagationEnvelope) {
-        Coordinate[] hullPoints = new Coordinate[sources.size() + 1];
-        hullPoints[0] = receiver;
-        for (int i = 0; i < sources.size(); i++) {
-            hullPoints[i + 1] = sources.get(i).position;
+        Envelope wallsEnvelope = new Envelope(receiver);
+        for (SourcePointInfo source : sources) {
+            wallsEnvelope.expandToInclude(source.position);
         }
-        Geometry hull = new ConvexHull(hullPoints, GEOMETRY_FACTORY).getConvexHull();
-        Envelope wallsEnvelope = hull.getEnvelopeInternal();
         wallsEnvelope.expandBy(data.maxRefDist);
-        List<Wall> walls = new ArrayList<>();
-        for (Wall wall : data.profileBuilder.getWallsIn(wallsEnvelope.intersection(receiverPropagationEnvelope))) {
-            // epsilon: keep the walls at exactly maxRefDist despite rounding differences with the distance test
-            if (hull.isWithinDistance(wall.getLineSegment().toGeometry(GEOMETRY_FACTORY), data.maxRefDist + epsilon)) {
-                walls.add(wall);
-            }
-        }
-        return walls;
+        return data.profileBuilder.getWallsIn(wallsEnvelope.intersection(receiverPropagationEnvelope));
     }
 
     /**

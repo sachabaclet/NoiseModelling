@@ -11,11 +11,15 @@ package org.noise_planet.noisemodelling.pathfinder;
 
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.index.strtree.ItemBoundable;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.Building;
 import org.noise_planet.noisemodelling.pathfinder.path.Scene;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPoint;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointDistanceComparator;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointReceiver;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointSource;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutProfile;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.ProfileBuilder;
 import org.slf4j.Logger;
@@ -355,5 +359,73 @@ public class ProfileBuilderTest {
                 index.stream().mapToInt(Integer::intValue).toArray());
 
 
+    }
+
+    /**
+     * queryNearLine returns the items of rtree.query in the same order, without losing any wall close to the line
+     */
+    @Test
+    public void testQueryNearLine() {
+        ProfileBuilder profileBuilder = new ProfileBuilder(4, 4, 4, 30);
+        Random random = new Random(42);
+        double x0 = 500000, y0 = 6500000;
+        for (int i = 0; i < 400; i++) {
+            double x = x0 + (i % 20) * 25 + random.nextDouble() * 10, y = y0 + (i / 20) * 25 + random.nextDouble() * 10;
+            profileBuilder.addBuilding(new Coordinate[]{new Coordinate(x, y, 10), new Coordinate(x + 12, y, 10),
+                    new Coordinate(x + 12, y + 8, 10), new Coordinate(x, y + 8, 10)});
+        }
+        profileBuilder.finishFeeding();
+        int pruned = 0;
+        for (int test = 0; test < 200; test++) {
+            // from a wall end, so that the line touches walls
+            Coordinate p0 = profileBuilder.processedObstructions.get(
+                    random.nextInt(profileBuilder.processedObstructions.size())).getLineSegment().p0;
+            Coordinate p1 = new Coordinate(x0 + random.nextDouble() * 500, y0 + random.nextDouble() * 500);
+            LineSegment line = new LineSegment(p0, p1);
+            for (LineSegment part : ProfileBuilder.splitSegment(p0, p1, 30)) {
+                List<?> expected = profileBuilder.rtree.query(new Envelope(part.p0, part.p1));
+                List<Object> actual = profileBuilder.queryNearLine(new Envelope(part.p0, part.p1), line).stream()
+                        .map(ItemBoundable::getItem).collect(Collectors.toList());
+                assertEquals(expected.stream().filter(actual::contains).collect(Collectors.toList()), actual);
+                for (Object item : expected) {
+                    LineSegment wall = profileBuilder.processedObstructions.get((Integer) item).getLineSegment();
+                    assertTrue(wall.distance(line) > 1e-4 || actual.contains(item));
+                }
+                pruned += expected.size() - actual.size();
+            }
+        }
+        assertTrue(pruned > 0);
+    }
+
+    /**
+     * insertCutPoint into sorted cut points (merge) gives the order of the stable sort of all the points
+     */
+    @Test
+    public void testInsertCutPointIntoSortedPoints() {
+        Random random = new Random(7);
+        CutPointDistanceComparator comparator = new CutPointDistanceComparator(new Coordinate(0, 0));
+        for (int test = 0; test < 200; test++) {
+            CutPointSource source = new CutPointSource(new Coordinate(0, 0));
+            CutPointReceiver receiver = new CutPointReceiver(new Coordinate(100, 0));
+            // integer coordinates for many points at the same distance, some beyond the receiver
+            List<CutPoint> sortedPoints = new ArrayList<>();
+            CutPoint[] insertedPoints = new CutPoint[random.nextInt(10)];
+            for (int i = random.nextInt(10); i > 0; i--) {
+                sortedPoints.add(new CutPoint(new Coordinate(random.nextInt(120), random.nextInt(3))));
+            }
+            for (int i = 0; i < insertedPoints.length; i++) {
+                insertedPoints[i] = new CutPoint(new Coordinate(random.nextInt(120), random.nextInt(3)));
+            }
+            sortedPoints.sort(comparator);
+            List<CutPoint> expected = new ArrayList<>(Arrays.asList(insertedPoints));
+            expected.addAll(sortedPoints);
+            expected.sort(comparator);
+            expected.add(0, source);
+            expected.add(receiver);
+            CutProfile profile = new CutProfile(source, receiver);
+            profile.cutPoints.addAll(1, sortedPoints);
+            profile.insertCutPoint(true, insertedPoints);
+            assertEquals(expected, profile.cutPoints);
+        }
     }
 }

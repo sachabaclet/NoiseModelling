@@ -2,6 +2,7 @@ package org.noise_planet.noisemodelling.pathfinder.profilebuilder;
 
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.LineSegment;
+import org.locationtech.jts.math.Vector2D;
 
 
 public class Wall extends LineObstruction {
@@ -10,6 +11,9 @@ public class Wall extends LineObstruction {
     public final ProfileBuilder.IntersectionType type;
 
     public long primaryKey = -1;
+
+    /** For a building wall of the ProfileBuilder: vector of one millimeter toward the exterior of the building */
+    Vector2D exteriorOffset;
 
     /** Is the wall definition valid? */
     boolean isValid;
