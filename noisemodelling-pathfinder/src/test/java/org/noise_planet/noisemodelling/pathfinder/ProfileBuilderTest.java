@@ -11,6 +11,7 @@ package org.noise_planet.noisemodelling.pathfinder;
 
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.index.strtree.ItemBoundable;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.Building;
@@ -355,5 +356,41 @@ public class ProfileBuilderTest {
                 index.stream().mapToInt(Integer::intValue).toArray());
 
 
+    }
+
+    /**
+     * queryNearLine returns the items of rtree.query in the same order, without losing any wall close to the line
+     */
+    @Test
+    public void testQueryNearLine() {
+        ProfileBuilder profileBuilder = new ProfileBuilder(4, 4, 4, 30);
+        Random random = new Random(42);
+        double x0 = 500000, y0 = 6500000;
+        for (int i = 0; i < 400; i++) {
+            double x = x0 + (i % 20) * 25 + random.nextDouble() * 10, y = y0 + (i / 20) * 25 + random.nextDouble() * 10;
+            profileBuilder.addBuilding(new Coordinate[]{new Coordinate(x, y, 10), new Coordinate(x + 12, y, 10),
+                    new Coordinate(x + 12, y + 8, 10), new Coordinate(x, y + 8, 10)});
+        }
+        profileBuilder.finishFeeding();
+        int pruned = 0;
+        for (int test = 0; test < 200; test++) {
+            // from a wall end, so that the line touches walls
+            Coordinate p0 = profileBuilder.processedObstructions.get(
+                    random.nextInt(profileBuilder.processedObstructions.size())).getLineSegment().p0;
+            Coordinate p1 = new Coordinate(x0 + random.nextDouble() * 500, y0 + random.nextDouble() * 500);
+            LineSegment line = new LineSegment(p0, p1);
+            for (LineSegment part : ProfileBuilder.splitSegment(p0, p1, 30)) {
+                List<?> expected = profileBuilder.rtree.query(new Envelope(part.p0, part.p1));
+                List<Object> actual = profileBuilder.queryNearLine(new Envelope(part.p0, part.p1), line).stream()
+                        .map(ItemBoundable::getItem).collect(Collectors.toList());
+                assertEquals(expected.stream().filter(actual::contains).collect(Collectors.toList()), actual);
+                for (Object item : expected) {
+                    LineSegment wall = profileBuilder.processedObstructions.get((Integer) item).getLineSegment();
+                    assertTrue(wall.distance(line) > 1e-4 || actual.contains(item));
+                }
+                pruned += expected.size() - actual.size();
+            }
+        }
+        assertTrue(pruned > 0);
     }
 }

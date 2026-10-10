@@ -13,6 +13,9 @@ import org.locationtech.jts.algorithm.Angle;
 import org.locationtech.jts.algorithm.CGAlgorithms3D;
 import org.locationtech.jts.algorithm.RobustLineIntersector;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.index.strtree.AbstractNode;
+import org.locationtech.jts.index.strtree.Boundable;
+import org.locationtech.jts.index.strtree.ItemBoundable;
 import org.locationtech.jts.index.strtree.STRtree;
 import org.locationtech.jts.io.WKTWriter;
 import org.locationtech.jts.math.Vector2D;
@@ -1141,25 +1144,30 @@ public class ProfileBuilder {
      *                                        receiverCoordinate, stop computing and set #CutProfile.hasBuildingInter to buildings in profile data
      */
     private void addGroundBuildingCutPts(LineSegment fullLine, CutProfile profile, boolean stopAtObstacleOverSourceReceiver) {
-        // Collect all objects where envelope intersects all sub-segments of fullLine
-        Set<Integer> processed = new HashSet<>();
-
-        // Segmented fullLine, this is the query for rTree indexes
-        // Split line into segments for structures based on RTree in order to limit the number of queries
-        // (for large area of the line segment envelope)
+        // Segmented fullLine, the objects are processed in the order of the rTree queries made with the envelope of
+        // each segment: by first segment whose envelope intersects the object envelope, then in tree order.
+        // A single query lists the objects near fullLine (the others cannot intersect it), in tree order.
         List<LineSegment> lines = splitSegment(fullLine.p0, fullLine.p1, maxLineLength);
+        List<ItemBoundable> nearItems = queryNearLine(new Envelope(fullLine.p0, fullLine.p1), fullLine);
+        int[] firstLines = new int[nearItems.size()];
+        for (int k = 0; k < firstLines.length; k++) {
+            Envelope itemEnvelope = (Envelope) nearItems.get(k).getBounds();
+            while (firstLines[k] < lines.size()
+                    && !itemEnvelope.intersects(lines.get(firstLines[k]).p0, lines.get(firstLines[k]).p1)) {
+                firstLines[k]++;
+            }
+        }
         List<CutPoint> newCutPoints = new ArrayList<>();
         // getIntersection returns an internal coordinate, it must be copied before the intersector is reused
         RobustLineIntersector intersector = new RobustLineIntersector();
         try {
             for (int j = 0; j < lines.size()
                     && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
-                LineSegment line = lines.get(j);
-                for (Object result : rtree.query(new Envelope(line.p0, line.p1))) {
-                    if (!(result instanceof Integer) || processed.contains((Integer) result)) {
+                for (int k = 0; k < firstLines.length; k++) {
+                    Object result = nearItems.get(k).getItem();
+                    if (firstLines[k] != j || !(result instanceof Integer)) {
                         continue;
                     }
-                    processed.add((Integer) result);
                     int i = (Integer) result;
                     LineObstruction facetLine = processedObstructions.get(i);
                     intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
@@ -1204,6 +1212,60 @@ public class ProfileBuilder {
         } finally {
             profile.insertCutPoint(true, newCutPoints.toArray(CutPoint[]::new));
         }
+    }
+
+    /**
+     * Same items, in the same order, as rtree.query(envelope), without the nodes and items whose envelope is farther
+     * than one millimeter from the line of the segment, on one side: they cannot intersect the segment.
+     */
+    public List<ItemBoundable> queryNearLine(Envelope envelope, LineSegment line) {
+        List<ItemBoundable> items = new ArrayList<>();
+        AbstractNode root = rtree.getRoot();
+        if (!root.isEmpty() && ((Envelope) root.getBounds()).intersects(envelope)) {
+            queryNearLine(root, envelope, line, items);
+        }
+        return items;
+    }
+
+    private static void queryNearLine(AbstractNode node, Envelope envelope, LineSegment line,
+                                      List<ItemBoundable> items) {
+        for (Object child : node.getChildBoundables()) {
+            Envelope bounds = (Envelope) ((Boundable) child).getBounds();
+            if (!bounds.intersects(envelope) || isFarFromLine(bounds, line)) {
+                continue;
+            }
+            if (child instanceof AbstractNode) {
+                queryNearLine((AbstractNode) child, envelope, line, items);
+            } else {
+                items.add((ItemBoundable) child);
+            }
+        }
+    }
+
+    /**
+     * @return True if the four corners of the envelope are on the same side of the line of the segment, farther than
+     * one millimeter from it
+     */
+    private static boolean isFarFromLine(Envelope envelope, LineSegment line) {
+        int side = sideOfLine(line, envelope.getMinX(), envelope.getMinY());
+        return side != 0 && sideOfLine(line, envelope.getMaxX(), envelope.getMinY()) == side
+                && sideOfLine(line, envelope.getMinX(), envelope.getMaxY()) == side
+                && sideOfLine(line, envelope.getMaxX(), envelope.getMaxY()) == side;
+    }
+
+    /**
+     * @return 1 or -1 if the point is on the left or on the right of the line of the segment, farther than one
+     * millimeter from it, 0 otherwise (the margin is many orders of magnitude above the rounding errors)
+     */
+    private static int sideOfLine(LineSegment line, double x, double y) {
+        double dx = line.p1.x - line.p0.x;
+        double dy = line.p1.y - line.p0.y;
+        // distance of the point from the line multiplied by the segment length
+        double cross = dx * (y - line.p0.y) - dy * (x - line.p0.x);
+        if (cross * cross <= MILLIMETER * MILLIMETER * (dx * dx + dy * dy)) {
+            return 0;
+        }
+        return cross > 0 ? 1 : -1;
     }
 
     Coordinate[] getTriangleVertices(int triIndex) {
