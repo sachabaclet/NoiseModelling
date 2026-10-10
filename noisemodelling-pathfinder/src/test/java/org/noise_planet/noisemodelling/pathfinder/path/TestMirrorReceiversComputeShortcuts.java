@@ -11,7 +11,13 @@ package org.noise_planet.noisemodelling.pathfinder.path;
 
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.Envelope;
+import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineSegment;
+import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.geom.prep.PreparedGeometry;
+import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 
 import java.util.Random;
 
@@ -72,5 +78,42 @@ public class TestMirrorReceiversComputeShortcuts {
             }
         }
         assertTrue(decided > 100000);
+    }
+
+    @Test
+    public void testFirstPointInCone() {
+        Random random = new Random(3);
+        GeometryFactory factory = new GeometryFactory();
+        int inCone = 0;
+        for (int i = 0; i < 20000; i++) {
+            Coordinate[] p = randomPoints(random, 3);
+            Polygon cone = MirrorReceiversCompute.createWallReflectionVisibilityCone(p[2], new LineSegment(p[0], p[1]),
+                    random.nextDouble() * 1000, 100);
+            if (cone.isEmpty()) {
+                continue;
+            }
+            PreparedGeometry prepared = PreparedGeometryFactory.prepare(cone);
+            Coordinate[] ring = cone.getExteriorRing().getCoordinates();
+            Envelope envelope = cone.getEnvelopeInternal();
+            for (int j = 0; j < 10; j++) {
+                Coordinate[] wall = randomPoints(random, 2);
+                if (j % 3 == 0) {
+                    // on a vertex or on an edge of the cone
+                    int edge = random.nextInt(ring.length - 1);
+                    double f = random.nextBoolean() ? 0 : random.nextDouble();
+                    wall[0] = new Coordinate(ring[edge].x + f * (ring[edge + 1].x - ring[edge].x),
+                            ring[edge].y + f * (ring[edge + 1].y - ring[edge].y));
+                } else if (j % 3 == 1) {
+                    wall[0] = new Coordinate(envelope.getMinX() + random.nextDouble() * envelope.getWidth(),
+                            envelope.getMinY() + random.nextDouble() * envelope.getHeight());
+                }
+                LineString line = factory.createLineString(wall);
+                if (MirrorReceiversCompute.isFirstPointInCone(cone, line)) {
+                    assertTrue(prepared.intersects(line));
+                    inCone++;
+                }
+            }
+        }
+        assertTrue(inCone > 10000);
     }
 }

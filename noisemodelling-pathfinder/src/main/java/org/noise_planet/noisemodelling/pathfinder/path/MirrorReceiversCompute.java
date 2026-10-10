@@ -11,12 +11,14 @@ package org.noise_planet.noisemodelling.pathfinder.path;
 
 import org.locationtech.jts.algorithm.Intersection;
 import org.locationtech.jts.algorithm.LineIntersector;
+import org.locationtech.jts.algorithm.RayCrossingCounter;
 import org.locationtech.jts.algorithm.RobustLineIntersector;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineSegment;
 import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.Location;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
@@ -209,7 +211,6 @@ public class MirrorReceiversCompute {
             queryParentWedge(wallsTree.getRoot(), parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
                     new Wedge(parent), buildWalls, parentWedgeWalls);
             wallCandidates = parentWedgeWalls;
-            parentCone = PreparedGeometryFactory.prepare(parent.getImageReceiverVisibilityCone());
         }
         int candidateCount = parent == null ? buildWalls.size() : wallCandidates.size();
         for (int idCandidate = 0; idCandidate < candidateCount; idCandidate++) {
@@ -266,8 +267,12 @@ public class MirrorReceiversCompute {
                     continue;
                 }
             }
-            if(parent != null) {
+            if(parent != null && !isFirstPointInCone(parent.getImageReceiverVisibilityCone(),
+                    wallGeometries.get(wallIndex))) {
                 // check if the wall is visible from the previous image receiver
+                if (parentCone == null) {
+                    parentCone = PreparedGeometryFactory.prepare(parent.getImageReceiverVisibilityCone());
+                }
                 if(!parentCone.intersects(wallGeometries.get(wallIndex))) {
                     continue; // this wall is out of the bound of the receiver visibility
                 }
@@ -292,6 +297,25 @@ public class MirrorReceiversCompute {
             }
         }
         return true;
+    }
+
+    /**
+     * Same result as PreparedGeometry.intersects when it is true because the first point of the line is in the
+     * polygon (its first test, after the envelopes that then intersect), without preparing the polygon: the ring
+     * segments are given to the ray crossing counter in the same direction as by the point locator of the prepared
+     * polygon
+     * @return True if the line intersects the polygon, false if unknown
+     */
+    static boolean isFirstPointInCone(Polygon cone, LineString line) {
+        if (cone.isRectangle()) {
+            return false; // the prepared polygon uses another test
+        }
+        RayCrossingCounter counter = new RayCrossingCounter(line.getCoordinateN(0));
+        Coordinate[] ring = cone.getExteriorRing().getCoordinates();
+        for (int i = 1; i < ring.length; i++) {
+            counter.countSegment(ring[i - 1], ring[i]);
+        }
+        return counter.getLocation() != Location.EXTERIOR;
     }
 
     /**
