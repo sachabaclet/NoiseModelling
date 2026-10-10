@@ -1711,10 +1711,15 @@ public class ProfileBuilder {
         // Update intersection line test in the rtree visitor
         try {
             List<LineSegment> lines = splitSegment(p1, p2, maxLineLength);
+            LineSegment fullLine = new LineSegment(p1, p2);
             for(LineSegment segment : lines) {
                 visitor.setIntersectionLine(segment);
                 Envelope pathEnv = new Envelope(segment.p0, segment.p1);
-                rtree.query(pathEnv, visitor);
+                // same visits as rtree.query(pathEnv, visitor) without the walls far from the line, that the visitor
+                // would reject (it keeps the walls closer than epsilon to the segment)
+                for (ItemBoundable item : queryNearLine(pathEnv, fullLine)) {
+                    visitor.visitItem(item.getItem());
+                }
             }
         } catch (IllegalStateException ex) {
             //Ignore
