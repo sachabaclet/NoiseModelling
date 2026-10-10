@@ -808,6 +808,10 @@ public class ProfileBuilder {
                     LineSegment lineSegment = new LineSegment(coords[i], coords[i + 1]);
                     Wall w = (Wall) new Wall(lineSegment, j, IntersectionType.BUILDING).setProcessedObstructionIndex(processedObstructions.size());
                     w.setPrimaryKey(building.getPrimaryKey());
+                    // exterior polygon segments are CW, so the exterior of the polygon is on the left side of the vector
+                    // it works also with polygon holes as interiors are CCW
+                    w.exteriorOffset = Vector2D.create(lineSegment.p0, lineSegment.p1).rotate(LEFT_SIDE).normalize()
+                            .multiply(MILLIMETER);
                     w.copyAlphas(building);
                     processedObstructions.add(w);
                     rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
@@ -1077,11 +1081,7 @@ public class ProfileBuilder {
         newCutPoints.add(wallCutPoint);
         double zRayReceiverSource = Vertex.interpolateZ(intersection, fullLine.p0, fullLine.p1);
         // add a point at the bottom of the building on the exterior side of the building
-        Vector2D facetVector = Vector2D.create(facetLine.line.p0, facetLine.line.p1);
-        // exterior polygon segments are CW, so the exterior of the polygon is on the left side of the vector
-        // it works also with polygon holes as interiors are CCW
-        Vector2D exteriorVector = facetVector.rotate(LEFT_SIDE).normalize().multiply(MILLIMETER);
-        Coordinate exteriorPoint = exteriorVector.add(Vector2D.create(intersection)).toCoordinate();
+        Coordinate exteriorPoint = facetLine.exteriorOffset.add(Vector2D.create(intersection)).toCoordinate();
         // exterior point closer to source so we know that we enter the building
         if(JTSUtility.dist2D(exteriorPoint, fullLine.p0) < JTSUtility.dist2D(intersection, fullLine.p0)) {
             wallCutPoint.intersectionType = CutPointWall.INTERSECTION_TYPE.BUILDING_ENTER;
