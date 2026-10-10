@@ -35,6 +35,7 @@ import org.noise_planet.noisemodelling.pathfinder.profilebuilder.ProfileBuilder;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.Wall;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -58,7 +59,7 @@ public class MirrorReceiversCompute {
     private ReceiverImageVisitor[] sourceVisitors = null;
     /** With the sources given to the constructor, for each wall the sources of its images */
     private BitSet[] wallSources = null;
-    private STRtree wallsTree = null;
+    private WallsTree wallsTree = null;
 
     public static Polygon createWallReflectionVisibilityCone(Coordinate receiverImage, LineSegment wall,
                                                              double maximumPropagationDistance,
@@ -161,13 +162,13 @@ public class MirrorReceiversCompute {
             wallSources = computeWallSources(buildWalls, receiverCoordinates, sourceVisitors, maximumDistanceFromWall);
         }
         if (reflectionOrder > 1) {
-            wallsTree = new STRtree();
+            STRtree tree = new STRtree();
             for (int idWall = 0; idWall < buildWalls.size(); idWall++) {
                 if (wallSources == null || !wallSources[idWall].isEmpty()) {
-                    wallsTree.insert(wallGeometries.get(idWall).getEnvelopeInternal(), idWall);
+                    tree.insert(wallGeometries.get(idWall).getEnvelopeInternal(), idWall);
                 }
             }
-            wallsTree.build();
+            wallsTree = new WallsTree(tree);
         }
         ArrayList<MirrorReceiver> parentsToProcess = new ArrayList<>();
         // With known sources: the sources for which every wall of the parent image chain passes the distance test
@@ -204,17 +205,14 @@ public class MirrorReceiversCompute {
         // For the first depth every wall can create an image. For the next depths only
         // the walls under the visibility cone of the parent image can, so ask the wall
         // index instead of testing every wall
-        List<?> wallCandidates = null;
+        int candidateCount = buildWalls.size();
         PreparedGeometry parentCone = null;
         if (parent != null) {
-            List<Integer> parentWedgeWalls = new ArrayList<>();
-            queryParentWedge(wallsTree.getRoot(), parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
-                    new Wedge(parent), buildWalls, parentWedgeWalls);
-            wallCandidates = parentWedgeWalls;
+            candidateCount = wallsTree.queryWedge(parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
+                    new Wedge(parent), buildWalls);
         }
-        int candidateCount = parent == null ? buildWalls.size() : wallCandidates.size();
         for (int idCandidate = 0; idCandidate < candidateCount; idCandidate++) {
-            int wallIndex = parent == null ? idCandidate : (Integer) wallCandidates.get(idCandidate);
+            int wallIndex = parent == null ? idCandidate : wallsTree.result[idCandidate];
             Wall wall = buildWalls.get(wallIndex);
             // The tests below only reject images, from the cheapest to the most expensive one
             BitSet imageSources = null;
@@ -460,24 +458,68 @@ public class MirrorReceiversCompute {
     }
 
     /**
-     * Same walls, in the same order, as the query of the walls tree with the envelope, without the tree nodes and the
-     * walls that are outside the wedge of the parent image (a cheap version of the visibility cone test)
+     * The walls tree stored in arrays, its nodes in depth-first order, so that a query is a loop instead of a
+     * recursion over the tree objects
      */
-    private static void queryParentWedge(Boundable node, Envelope envelope, Wedge parentWedge, List<Wall> buildWalls,
-                                         List<Integer> walls) {
-        Envelope bounds = (Envelope) node.getBounds();
-        if (bounds == null || !bounds.intersects(envelope)) {
-            return;
+    private static final class WallsTree {
+        private Envelope[] bounds = new Envelope[256];
+        /** For each node: the wall index, or -1 for an inner node */
+        private int[] walls = new int[256];
+        /** For each node: the first node after its subtree */
+        private int[] next = new int[256];
+        private int nodeCount = 0;
+        /** Walls found by the last query */
+        int[] result = new int[256];
+
+        WallsTree(STRtree tree) {
+            add(tree.getRoot());
         }
-        if (node instanceof ItemBoundable) {
-            Integer wallIndex = (Integer) ((ItemBoundable) node).getItem();
-            if (!parentWedge.excludes(buildWalls.get(wallIndex).getLineSegment())) {
-                walls.add(wallIndex);
+
+        private void add(Boundable node) {
+            int id = nodeCount++;
+            if (id == walls.length) {
+                bounds = Arrays.copyOf(bounds, 2 * id);
+                walls = Arrays.copyOf(walls, 2 * id);
+                next = Arrays.copyOf(next, 2 * id);
             }
-        } else if (!parentWedge.excludes(bounds)) {
-            for (Object child : ((AbstractNode) node).getChildBoundables()) {
-                queryParentWedge((Boundable) child, envelope, parentWedge, buildWalls, walls);
+            bounds[id] = (Envelope) node.getBounds();
+            if (node instanceof ItemBoundable) {
+                walls[id] = (Integer) ((ItemBoundable) node).getItem();
+            } else {
+                walls[id] = -1;
+                for (Object child : ((AbstractNode) node).getChildBoundables()) {
+                    add((Boundable) child);
+                }
             }
+            next[id] = nodeCount;
+        }
+
+        /**
+         * Same walls, in the same order, as the query of the tree with the envelope, without the tree nodes and the
+         * walls that are outside the wedge of the parent image (a cheap version of the visibility cone test)
+         * @return Number of walls, stored in {@link #result}
+         */
+        int queryWedge(Envelope envelope, Wedge parentWedge, List<Wall> buildWalls) {
+            int count = 0;
+            int id = 0;
+            while (id < nodeCount) {
+                if (bounds[id] == null || !bounds[id].intersects(envelope)) {
+                    id = next[id]; // skip the subtree
+                } else if (walls[id] >= 0) {
+                    if (!parentWedge.excludes(buildWalls.get(walls[id]).getLineSegment())) {
+                        if (count == result.length) {
+                            result = Arrays.copyOf(result, 2 * count);
+                        }
+                        result[count++] = walls[id];
+                    }
+                    id++;
+                } else if (parentWedge.excludes(bounds[id])) {
+                    id = next[id];
+                } else {
+                    id++;
+                }
+            }
+            return count;
         }
     }
 
