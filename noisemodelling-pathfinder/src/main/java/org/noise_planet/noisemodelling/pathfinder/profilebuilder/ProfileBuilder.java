@@ -1294,10 +1294,15 @@ public class ProfileBuilder {
         final Coordinate aTri = this.vertices.get(tri.getA());
         final Coordinate bTri = this.vertices.get(tri.getB());
         final Coordinate cTri = this.vertices.get(tri.getC());
+        // a side with its two vertices on the same side of the propagation line, farther than one millimeter, is
+        // farther than TRIANGLE_INTERSECTION_EPSILON from it: it is skipped
+        final int aSide = sideOfLine(propagationLine, aTri.x, aTri.y);
+        final int bSide = sideOfLine(propagationLine, bTri.x, bTri.y);
+        final int cSide = sideOfLine(propagationLine, cTri.x, cTri.y);
         double distline_line;
         // Intersection First Side
         idNeighbor = triNeighbors.get(2);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((aSide == 0 || aSide != bSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(aTri, bTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
@@ -1315,7 +1320,7 @@ public class ProfileBuilder {
         }
         // Intersection Second Side
         idNeighbor = triNeighbors.get(0);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((bSide == 0 || bSide != cSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(bTri, cTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
@@ -1333,7 +1338,7 @@ public class ProfileBuilder {
         }
         // Intersection Third Side
         idNeighbor = triNeighbors.get(1);
-        if (!navigationHistory.contains(idNeighbor)) {
+        if ((cSide == 0 || cSide != aSide) && !navigationHistory.contains(idNeighbor)) {
             LineSegment triSegment = new LineSegment(cTri, aTri);
             Coordinate[] closestPoints = propagationLine.closestPoints(triSegment);
             Coordinate intersectionTest = null;
