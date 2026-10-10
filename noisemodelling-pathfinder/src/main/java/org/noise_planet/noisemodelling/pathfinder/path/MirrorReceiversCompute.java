@@ -61,10 +61,9 @@ public class MirrorReceiversCompute {
     public static Polygon createWallReflectionVisibilityCone(Coordinate receiverImage, LineSegment wall,
                                                              double maximumPropagationDistance,
                                                              double maximumDistanceFromWall) {
-        double distanceMin = wall.distance(receiverImage);
-
         GeometryFactory factory = new GeometryFactory();
-        if(distanceMin > maximumPropagationDistance) {
+        if(!isClearlyBelow(squaredDistance(wall, receiverImage), maximumPropagationDistance) &&
+                wall.distance(receiverImage) > maximumPropagationDistance) {
             return factory.createPolygon();
         }
         ArrayList<Coordinate> circleSegmentPoints = new ArrayList<>();
@@ -84,8 +83,10 @@ public class MirrorReceiversCompute {
             Coordinate newPoint = newPointTranslationVector.translate(receiverImage);
             Coordinate wallIntersectionPoint = Intersection.intersection(wall.p0, wall.p1, receiverImage, newPoint);
             if(wallIntersectionPoint != null) {
-                double wallIntersectionPointDistance = wallIntersectionPoint.distance(receiverImage);
-                if (wallIntersectionPointDistance < maximumPropagationDistance) {
+                double dx = wallIntersectionPoint.x - receiverImage.x;
+                double dy = wallIntersectionPoint.y - receiverImage.y;
+                if (isClearlyBelow(dx * dx + dy * dy, maximumPropagationDistance) ||
+                        wallIntersectionPoint.distance(receiverImage) < maximumPropagationDistance) {
                     double vectorLength = maximumPropagationDistance;
                     newPoint = newPointTranslationVector.multiply(vectorLength).translate(receiverImage);
                     if (circleSegmentPoints.isEmpty()) {
@@ -233,7 +234,9 @@ public class MirrorReceiversCompute {
                     receiverImage = parent.getReceiverPos();
                 }
             } else {
-                if (wall.getLineSegment().distance(receiverCoordinate) < closeReceiverWallDistance) {
+                if (!isClearlyAbove(squaredDistance(wall.getLineSegment(), receiverCoordinate),
+                        closeReceiverWallDistance) &&
+                        wall.getLineSegment().distance(receiverCoordinate) < closeReceiverWallDistance) {
                     continue; // the paths whose last reflection is on this wall are ignored
                 }
                 receiverImage = receiverCoordinate;
@@ -242,7 +245,8 @@ public class MirrorReceiversCompute {
             Coordinate proj = wall.getLineSegment().project(receiverImage);
             Coordinate rcvMirror = new Coordinate(2 * proj.x - receiverImage.x,
                     2 * proj.y - receiverImage.y, receiverImage.z);
-            if(wall.getLineSegment().distance(rcvMirror) > maximumPropagationDistance) {
+            if(!isClearlyBelow(squaredDistance(wall.getLineSegment(), rcvMirror), maximumPropagationDistance) &&
+                    wall.getLineSegment().distance(rcvMirror) > maximumPropagationDistance) {
                 // wall is too far from the receiver image, there is no receiver image
                 continue;
             }
@@ -346,9 +350,11 @@ public class MirrorReceiversCompute {
             wallSources[idWall] = new BitSet(sourceVisitors.length);
             LineSegment wallSegment = walls.get(idWall).getLineSegment();
             for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
+                LineSegment sourceReceiverSegment = sourceVisitors[idSource].sourceReceiverSegment;
                 if (!isFarFromSegment(wallSegment, receiver, directionX[idSource], directionY[idSource],
                         length[idSource], maximumDistanceFromWall) &&
-                        wallSegment.distance(sourceVisitors[idSource].sourceReceiverSegment) <= maximumDistanceFromWall) {
+                        (isClearlyCloser(wallSegment, sourceReceiverSegment, maximumDistanceFromWall) ||
+                        wallSegment.distance(sourceReceiverSegment) <= maximumDistanceFromWall)) {
                     wallSources[idWall].set(idSource);
                 }
             }
@@ -374,6 +380,59 @@ public class MirrorReceiversCompute {
         double across1 = directionX * (wall.p1.y - origin.y) - directionY * (wall.p1.x - origin.x);
         return (across0 > limit && across1 > limit) || (across0 < -limit && across1 < -limit) ||
                 (along0 < -limit && along1 < -limit) || (along0 > length + limit && along1 > length + limit);
+    }
+
+    /**
+     * The distances computed by JTS use Math.hypot, which is slow. A comparison of a distance with a limit is first
+     * done with the squared distance: when the distance is farther than 1e-6 m from the limit (the rounding errors
+     * of both computations are about 1e-9 m at projected coordinates), it gives the same result.
+     * @return True if the distance is lower than the limit by more than 1e-6 m
+     */
+    static boolean isClearlyBelow(double squaredDistance, double limit) {
+        double margin = limit - 1e-6;
+        return margin > 0 && squaredDistance < margin * margin;
+    }
+
+    /**
+     * @return True if the distance is greater than the limit by more than 1e-6 m (see {@link #isClearlyBelow})
+     */
+    static boolean isClearlyAbove(double squaredDistance, double limit) {
+        double margin = limit + 1e-6;
+        return squaredDistance > margin * margin;
+    }
+
+    /**
+     * @return Squared distance between the point and the segment, NaN if the segment is too short for this computation
+     */
+    static double squaredDistance(LineSegment segment, Coordinate point) {
+        double dx = segment.p1.x - segment.p0.x;
+        double dy = segment.p1.y - segment.p0.y;
+        double length2 = dx * dx + dy * dy;
+        if (!(length2 > 1e-100)) {
+            return Double.NaN;
+        }
+        double x = point.x - segment.p0.x;
+        double y = point.y - segment.p0.y;
+        double along = x * dx + y * dy;
+        if (along <= 0) {
+            return x * x + y * y;
+        }
+        if (along >= length2) {
+            double x1 = point.x - segment.p1.x;
+            double y1 = point.y - segment.p1.y;
+            return x1 * x1 + y1 * y1;
+        }
+        double across = x * dy - y * dx;
+        return across * across / length2;
+    }
+
+    /**
+     * @return True if an end point of the wall is closer than the limit to the segment by more than 1e-6 m: the
+     * distance between the wall and the segment is then lower than the limit
+     */
+    static boolean isClearlyCloser(LineSegment wall, LineSegment segment, double limit) {
+        return isClearlyBelow(squaredDistance(segment, wall.p0), limit) ||
+                isClearlyBelow(squaredDistance(segment, wall.p1), limit);
     }
 
     /**
@@ -620,7 +679,8 @@ public class MirrorReceiversCompute {
                 while (currentReceiverImage != null) {
                     final Wall currentWall = currentReceiverImage.getWall();
                     final LineSegment currentWallLineSegment = currentWall.getLineSegment();
-                    if (currentWallLineSegment.distance(sourceReceiverSegment) > maximumDistanceFromSegment) {
+                    if (!isClearlyCloser(currentWallLineSegment, sourceReceiverSegment, maximumDistanceFromSegment) &&
+                            currentWallLineSegment.distance(sourceReceiverSegment) > maximumDistanceFromSegment) {
                         return false;
                     }
                     // Check if reflection is placed on the wall segment
