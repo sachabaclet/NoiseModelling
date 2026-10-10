@@ -212,11 +212,9 @@ public class CnossosPathBuilder {
             // The 2D projection of the profile, the ground points and the mean ground plane are
             // the same for the homogeneous and the favourable path, so compute them only once here
             List<Coordinate> pts2D = cutProfile.computePts2D();
-            List<Integer> cut2DGroundIndex = new ArrayList<>(cutProfile.cutPoints.size());
-            Coordinate[] pts2DGround = cutProfile.computePts2DGround(cut2DGroundIndex).toArray(new Coordinate[0]);
-            double[] meanPlane = JTSUtility.getMeanPlaneCoefficients(pts2DGround);
+            ProfileGround ground = new ProfileGround(cutProfile);
             CnossosPath cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray,
-                    gS, false, pts2D, pts2DGround, cut2DGroundIndex, meanPlane);
+                    gS, false, pts2D, ground);
             if(cnossosPath != null) cnossosPaths.add(cnossosPath);
             if(computeFavourable) {
                 // Give a copy of the 2D points to the favourable path, because building a path can
@@ -226,7 +224,7 @@ public class CnossosPathBuilder {
                     pts2DCopy.add(new Coordinate(coordinate));
                 }
                 cnossosPath = computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray,
-                        gS, true, pts2DCopy, pts2DGround, cut2DGroundIndex, meanPlane);
+                        gS, true, pts2DCopy, ground);
                 if(cnossosPath != null) cnossosPaths.add(cnossosPath);
             }
         } else if ((cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
@@ -248,11 +246,31 @@ public class CnossosPathBuilder {
      */
     public static CnossosPath computeCnossosPathFromCutProfile(CutProfile cutProfile , List<Double> exactFrequencyArray, double gS, boolean favourable) {
         List<Coordinate> pts2D = cutProfile.computePts2D();
-        List<Integer> cut2DGroundIndex = new ArrayList<>(cutProfile.cutPoints.size());
-        Coordinate[] pts2DGround = cutProfile.computePts2DGround(cut2DGroundIndex).toArray(new Coordinate[0]);
-        double[] meanPlane = JTSUtility.getMeanPlaneCoefficients(pts2DGround);
         return computeCnossosPathFromCutProfile(cutProfile, exactFrequencyArray, gS, favourable,
-                pts2D, pts2DGround, cut2DGroundIndex, meanPlane);
+                pts2D, new ProfileGround(cutProfile));
+    }
+
+    /**
+     * 2D ground of a profile, the same for its homogeneous and favourable paths. It is computed on first use, so
+     * not for the paths rejected by the height of their reflection points.
+     */
+    private static final class ProfileGround {
+        final CutProfile cutProfile;
+        List<Integer> cut2DGroundIndex;
+        Coordinate[] pts2DGround;
+        double[] meanPlane;
+
+        ProfileGround(CutProfile cutProfile) {
+            this.cutProfile = cutProfile;
+        }
+
+        void compute() {
+            if(pts2DGround == null) {
+                cut2DGroundIndex = new ArrayList<>(cutProfile.cutPoints.size());
+                pts2DGround = cutProfile.computePts2DGround(cut2DGroundIndex).toArray(new Coordinate[0]);
+                meanPlane = JTSUtility.getMeanPlaneCoefficients(pts2DGround);
+            }
+        }
     }
 
     /**
@@ -260,15 +278,12 @@ public class CnossosPathBuilder {
      * profile geometry already computed, so it is not computed twice when the same profile gives
      * the homogeneous and the favourable path.
      * @param pts2D 2D projection of the cut points, may be updated by this method (reflection points)
-     * @param pts2DGround 2D projection of the ground, read only
-     * @param cut2DGroundIndex Ground point index for each cut point, read only
-     * @param meanPlane Mean ground plane coefficients of the whole profile, read only
+     * @param ground 2D ground of the profile, read only
      */
     private static CnossosPath computeCnossosPathFromCutProfile(CutProfile cutProfile ,
                                                                 List<Double> exactFrequencyArray, double gS,
                                                                 boolean favourable, List<Coordinate> pts2D,
-                                                                Coordinate[] pts2DGround,
-                                                                List<Integer> cut2DGroundIndex, double[] meanPlane) {
+                                                                ProfileGround ground) {
         if(favourable &&
                 (cutProfile.profileType == CutProfile.PROFILE_TYPE.LEFT ||
                         cutProfile.profileType == CutProfile.PROFILE_TYPE.RIGHT)
@@ -290,50 +305,6 @@ public class CnossosPathBuilder {
             throw new IllegalArgumentException("The two arrays size should be the same");
         }
 
-        Coordinate firstPts2D = pts2D.getFirst();
-        Coordinate lastPts2D = pts2D.getLast();
-        SegmentPath srPath = computeSegment(firstPts2D, lastPts2D, meanPlane, cutProfile.getGPath(), cutProfile.getSource().groundCoefficient);
-        // Directive 2002/49/EC, section 2.5.3 "Significant heights above the ground":
-        // "If the equivalent height of a point becomes negative, i.e. if the point is located
-        //  below the mean ground plane, a null height is retained, and the equivalent point is
-        //  then identical with its possible image."
-        // Applied here only to DIRECT/REFLECTION SR segments. Lateral (LEFT/RIGHT) paths are
-        // excluded because their 2D cut plane geometry differs from the vertical plane and
-        // applying this rule there causes regressions (e.g. TC14).
-        if(cutProfile.profileType == CutProfile.PROFILE_TYPE.DIRECT ||
-                cutProfile.profileType == CutProfile.PROFILE_TYPE.REFLECTION) {
-            double slopeNorm = Math.sqrt(1 + meanPlane[0] * meanPlane[0]);
-            double signedZsH = (firstPts2D.y - (meanPlane[0] * firstPts2D.x + meanPlane[1])) / slopeNorm;
-            double signedZrH = (lastPts2D.y - (meanPlane[0] * lastPts2D.x + meanPlane[1])) / slopeNorm;
-            boolean needsRecompute = false;
-            if(signedZsH < 0) {
-                srPath.zsH = 0.0;
-                needsRecompute = true;
-            }
-            if(signedZrH < 0) {
-                srPath.zrH = 0.0;
-                needsRecompute = true;
-            }
-            if(needsRecompute && (srPath.zsH + srPath.zrH) > 0) {
-                double gPath = cutProfile.getGPath();
-                srPath.testFormH = srPath.dp / (30 * (srPath.zsH + srPath.zrH));
-                srPath.gPathPrime = srPath.testFormH <= 1 ? gPath * srPath.testFormH + gS * (1 - srPath.testFormH) : gPath;
-                double deltaZT = 6e-3 * srPath.dp / (srPath.zsH + srPath.zrH);
-                double deltaZS = ALPHA0 * pow((srPath.zsH / (srPath.zsH + srPath.zrH)), 2) * (srPath.dp * srPath.dp / 2);
-                srPath.zsF = srPath.zsH + deltaZS + deltaZT;
-                double deltaZR = ALPHA0 * pow((srPath.zrH / (srPath.zsH + srPath.zrH)), 2) * (srPath.dp * srPath.dp / 2);
-                srPath.zrF = srPath.zrH + deltaZR + deltaZT;
-                srPath.testFormF = srPath.dp / (30 * (srPath.zsF + srPath.zrF));
-            }
-        }
-        srPath.setPoints2DGround(pts2DGround);
-        srPath.dc = CGAlgorithms3D.distance(cutProfile.getReceiver().getCoordinate(),
-                cutProfile.getSource().getCoordinate());
-        CnossosPath cnossosPath = new CnossosPath(cutProfile);
-        cnossosPath.setFavourable(favourable);
-        cnossosPath.setPointList(points);
-        cnossosPath.setSegmentList(segments);
-        cnossosPath.setSRSegment(srPath);
         List<Coordinate> hullPts2D = pts2D;
         List<CutPoint> transformedCutPoints = null;
         if(favourable) {
@@ -384,6 +355,55 @@ public class CnossosPathBuilder {
             }
         }
 
+        // The path is valid, compute the ground (it does not depend on the height of the reflection points)
+        ground.compute();
+        Coordinate[] pts2DGround = ground.pts2DGround;
+        List<Integer> cut2DGroundIndex = ground.cut2DGroundIndex;
+        double[] meanPlane = ground.meanPlane;
+        Coordinate firstPts2D = pts2D.getFirst();
+        Coordinate lastPts2D = pts2D.getLast();
+        SegmentPath srPath = computeSegment(firstPts2D, lastPts2D, meanPlane, cutProfile.getGPath(), cutProfile.getSource().groundCoefficient);
+        // Directive 2002/49/EC, section 2.5.3 "Significant heights above the ground":
+        // "If the equivalent height of a point becomes negative, i.e. if the point is located
+        //  below the mean ground plane, a null height is retained, and the equivalent point is
+        //  then identical with its possible image."
+        // Applied here only to DIRECT/REFLECTION SR segments. Lateral (LEFT/RIGHT) paths are
+        // excluded because their 2D cut plane geometry differs from the vertical plane and
+        // applying this rule there causes regressions (e.g. TC14).
+        if(cutProfile.profileType == CutProfile.PROFILE_TYPE.DIRECT ||
+                cutProfile.profileType == CutProfile.PROFILE_TYPE.REFLECTION) {
+            double slopeNorm = Math.sqrt(1 + meanPlane[0] * meanPlane[0]);
+            double signedZsH = (firstPts2D.y - (meanPlane[0] * firstPts2D.x + meanPlane[1])) / slopeNorm;
+            double signedZrH = (lastPts2D.y - (meanPlane[0] * lastPts2D.x + meanPlane[1])) / slopeNorm;
+            boolean needsRecompute = false;
+            if(signedZsH < 0) {
+                srPath.zsH = 0.0;
+                needsRecompute = true;
+            }
+            if(signedZrH < 0) {
+                srPath.zrH = 0.0;
+                needsRecompute = true;
+            }
+            if(needsRecompute && (srPath.zsH + srPath.zrH) > 0) {
+                double gPath = cutProfile.getGPath();
+                srPath.testFormH = srPath.dp / (30 * (srPath.zsH + srPath.zrH));
+                srPath.gPathPrime = srPath.testFormH <= 1 ? gPath * srPath.testFormH + gS * (1 - srPath.testFormH) : gPath;
+                double deltaZT = 6e-3 * srPath.dp / (srPath.zsH + srPath.zrH);
+                double deltaZS = ALPHA0 * pow((srPath.zsH / (srPath.zsH + srPath.zrH)), 2) * (srPath.dp * srPath.dp / 2);
+                srPath.zsF = srPath.zsH + deltaZS + deltaZT;
+                double deltaZR = ALPHA0 * pow((srPath.zrH / (srPath.zsH + srPath.zrH)), 2) * (srPath.dp * srPath.dp / 2);
+                srPath.zrF = srPath.zrH + deltaZR + deltaZT;
+                srPath.testFormF = srPath.dp / (30 * (srPath.zsF + srPath.zrF));
+            }
+        }
+        srPath.setPoints2DGround(pts2DGround);
+        srPath.dc = CGAlgorithms3D.distance(cutProfile.getReceiver().getCoordinate(),
+                cutProfile.getSource().getCoordinate());
+        CnossosPath cnossosPath = new CnossosPath(cutProfile);
+        cnossosPath.setFavourable(favourable);
+        cnossosPath.setPointList(points);
+        cnossosPath.setSegmentList(segments);
+        cnossosPath.setSRSegment(srPath);
         // Create segments from each diffraction point to the receiver
         for (int i = 1; i < hullPointsIndices.size(); i++) {
             int i0 = hullPointsIndices.get(i - 1);
