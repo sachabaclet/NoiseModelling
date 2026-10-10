@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import java.text.DecimalFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -102,6 +103,9 @@ public class ProfileBuilder {
 
     /** List of ground effects. */
     private final List<GroundAbsorption> groundAbsorptions = new ArrayList<>();
+    /** Memoized touches predicate between two ground effects, the key is the pair of indexes (two threads may
+     * compute the same entry, they store the same value) */
+    private final Map<Long, Boolean> groundAbsorptionsTouches = new ConcurrentHashMap<>();
 
     /** Receivers .*/
     private final List<Coordinate> receivers = new ArrayList<>();
@@ -1127,7 +1131,13 @@ public class ProfileBuilder {
                 GroundAbsorption nextGroundAbsorption = groundAbsorptions.get(groundSurfaceIndex);
                 // if the interior of the two ground surfaces overlaps we add the ground point
                 // (as we will not encounter the side of this other ground surface)
-                if (!nextGroundAbsorption.geom.touches(groundAbsorption.geom)) {
+                long touchesKey = ((long) groundSurfaceIndex << 32) | (facetLine.getOriginId() & 0xFFFFFFFFL);
+                Boolean touches = groundAbsorptionsTouches.get(touchesKey);
+                if (touches == null) {
+                    touches = nextGroundAbsorption.geom.touches(groundAbsorption.geom);
+                    groundAbsorptionsTouches.put(touchesKey, touches);
+                }
+                if (!touches) {
                     newCutPoints.add(new CutPointGroundEffect(groundSurfaceIndex,
                             afterIntersectionPoint.getCoordinate(),
                             nextGroundAbsorption.getCoefficient()));
