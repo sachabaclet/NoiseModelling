@@ -340,6 +340,9 @@ public class JTSUtility {
         double valA2 = 0;
         double valB1 = 0;
         double valB2 = 0;
+        // x^2 and x^3 of each point are computed once, p1 of a segment is p2 of the previous one
+        double x1Square = Math.pow (profile[0].x, 2);
+        double x1Cube = Math.pow (profile[0].x, 3);
         /*
          * equation VI-3
          */
@@ -347,18 +350,22 @@ public class JTSUtility {
         {
             Coordinate p1 = profile[i];
             Coordinate p2 = profile[i+1];
+            double x2Square = Math.pow (p2.x, 2);
+            double x2Cube = Math.pow (p2.x, 3);
             double dx = p2.x - p1.x ;
             if (dx > 0)
             {
                 double ai = (p2.y - p1.y) / dx;
                 double bi = p1.y - ai * p1.x;
-                double vald2 = Math.pow (p2.x, 2) - Math.pow (p1.x, 2);
-                double vald3 = Math.pow (p2.x, 3) - Math.pow (p1.x, 3);
+                double vald2 = x2Square - x1Square;
+                double vald3 = x2Cube - x1Cube;
                 valA1 += ai * vald3 ;
                 valA2 += bi * vald2;
                 valB1 += ai * vald2;
                 valB2 += bi * dx;
             }
+            x1Square = x2Square;
+            x1Cube = x2Cube;
         }
         double valA = 2/3. * valA1 + valA2;
         double valB = valB1 + 2 * valB2;
