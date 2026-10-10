@@ -10,6 +10,7 @@
 package org.noise_planet.noisemodelling.pathfinder.path;
 
 import org.junit.jupiter.api.Test;
+import org.locationtech.jts.algorithm.Orientation;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.GeometryFactory;
@@ -21,6 +22,7 @@ import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 
 import java.util.Random;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -115,5 +117,26 @@ public class TestMirrorReceiversComputeShortcuts {
             }
         }
         assertTrue(inCone > 10000);
+    }
+
+    @Test
+    public void testWallPointTest() {
+        Random random = new Random(1);
+        for (int i = 0; i < 200000; i++) {
+            Coordinate[] p = randomPoints(random, 3);
+            if (random.nextInt(4) == 0) {
+                // on the line of the wall, or next to it
+                double f = random.nextDouble() * 3 - 1;
+                p[2] = new Coordinate(p[0].x + f * (p[1].x - p[0].x), p[0].y + f * (p[1].y - p[0].y));
+                if (random.nextBoolean()) {
+                    p[2].x = Math.nextUp(p[2].x);
+                }
+            }
+            if (random.nextInt(20) == 0) {
+                p[1].y = p[0].y;
+            }
+            assertEquals(Orientation.isCCW(new Coordinate[]{p[0], p[1], p[2], p[0]}),
+                    MirrorReceiversCompute.wallPointTest(new LineSegment(p[0], p[1]), p[2]));
+        }
     }
 }

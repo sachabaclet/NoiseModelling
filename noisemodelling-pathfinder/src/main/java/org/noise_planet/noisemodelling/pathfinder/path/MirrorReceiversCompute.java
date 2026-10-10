@@ -242,6 +242,14 @@ public class MirrorReceiversCompute {
                 }
                 receiverImage = receiverCoordinate;
             }
+            // Walls that belong to a building (polygon) does not create image receiver
+            // from the two sides of the wall
+            // Exterior polygons are CW we can check if the receiver is on the reflective side of the wall
+            // (on the exterior side of the wall)
+            if(wall.getType() == ProfileBuilder.IntersectionType.BUILDING &&
+                    !wallPointTest(wall.getLineSegment(), receiverImage)) {
+                continue;
+            }
             //Calculate the coordinate of projection
             Coordinate proj = wall.getLineSegment().project(receiverImage);
             Coordinate rcvMirror = new Coordinate(2 * proj.x - receiverImage.x,
@@ -249,14 +257,6 @@ public class MirrorReceiversCompute {
             if(!isClearlyBelow(squaredDistance(wall.getLineSegment(), rcvMirror), maximumPropagationDistance) &&
                     wall.getLineSegment().distance(rcvMirror) > maximumPropagationDistance) {
                 // wall is too far from the receiver image, there is no receiver image
-                continue;
-            }
-            // Walls that belong to a building (polygon) does not create image receiver
-            // from the two sides of the wall
-            // Exterior polygons are CW we can check if the receiver is on the reflective side of the wall
-            // (on the exterior side of the wall)
-            if(wall.getType() == ProfileBuilder.IntersectionType.BUILDING &&
-                    !wallPointTest(wall.getLineSegment(), receiverImage)) {
                 continue;
             }
             if (lastDepth && imageSources != null) {
@@ -566,6 +566,17 @@ public class MirrorReceiversCompute {
      * @return True if the wall is oriented to the point, false if the wall Occlusion Culling (transparent)
      */
     public static boolean wallPointTest(LineSegment wall1, Coordinate pt) {
+        // The ring is a triangle: when it is clearly not flat, its orientation is the sign of this determinant (whose
+        // rounding error is below 1e-15 (|ax by| + |ay bx|), far below the bound)
+        double ax = wall1.p1.x - wall1.p0.x;
+        double ay = wall1.p1.y - wall1.p0.y;
+        double bx = pt.x - wall1.p0.x;
+        double by = pt.y - wall1.p0.y;
+        double determinant = ax * by - ay * bx;
+        double bound = 1e-12 * (Math.abs(ax * by) + Math.abs(ay * bx));
+        if (determinant > bound || determinant < -bound) {
+            return determinant > 0;
+        }
         return org.locationtech.jts.algorithm.Orientation.isCCW(new Coordinate[]{wall1.getCoordinate(0),
                 wall1.getCoordinate(1), pt, wall1.getCoordinate(0)});
     }
