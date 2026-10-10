@@ -50,6 +50,13 @@ public class MirrorReceiversCompute {
     int numberOfImageReceivers = 0;
     /** With the sources given to the constructor, the visitor that holds the images of each source */
     private Map<Coordinate, ReceiverImageVisitor> visitorBySource = null;
+    // Used while the images are created
+    private List<LineString> wallGeometries;
+    private double closeReceiverWallDistance;
+    private ReceiverImageVisitor[] sourceVisitors = null;
+    /** With the sources given to the constructor, for each wall the sources of its images */
+    private BitSet[] wallSources = null;
+    private STRtree wallsTree = null;
 
     public static Polygon createWallReflectionVisibilityCone(Coordinate receiverImage, LineSegment wall,
                                                              double maximumPropagationDistance,
@@ -129,18 +136,17 @@ public class MirrorReceiversCompute {
         this.buildWalls = buildWalls;
         this.maximumDistanceFromWall = maximumDistanceFromWall;
         this.maximumPropagationDistance = maximumPropagationDistance;
+        this.closeReceiverWallDistance = closeReceiverWallDistance;
         mirrorReceiverTree = new STRtree();
         // Create the geometry of each wall once, and index them, instead of creating a new
         // geometry for every parent image x wall combination in the loop below
-        List<LineString> wallGeometries = new ArrayList<>(buildWalls.size());
+        wallGeometries = new ArrayList<>(buildWalls.size());
         for (Wall wall : buildWalls) {
             wallGeometries.add(wall.getLineSegment().toGeometry(gf));
         }
         // With known sources, each source gets the visitor of findCloseMirrorReceivers, fed while the images are
         // created. The visitor rejects an image for a source if a wall of its chain is too far from the
         // source-receiver segment, so for each wall keep the sources that pass this test.
-        ReceiverImageVisitor[] sourceVisitors = null;
-        BitSet[] wallSources = null;
         if (sources != null) {
             sourceVisitors = new ReceiverImageVisitor[sources.size()];
             visitorBySource = new IdentityHashMap<>();
@@ -151,7 +157,6 @@ public class MirrorReceiversCompute {
             }
             wallSources = computeWallSources(buildWalls, receiverCoordinates, sourceVisitors, maximumDistanceFromWall);
         }
-        STRtree wallsTree = null;
         if (reflectionOrder > 1) {
             wallsTree = new STRtree();
             for (int idWall = 0; idWall < buildWalls.size(); idWall++) {
@@ -173,101 +178,116 @@ public class MirrorReceiversCompute {
             ArrayList<MirrorReceiver> nextParentsToProcess = new ArrayList<>();
             ArrayList<BitSet> nextParentsSources = new ArrayList<>();
             for (int idParent = 0; idParent < parentsToProcess.size(); idParent++) {
-                MirrorReceiver parent = parentsToProcess.get(idParent);
-                // For the first depth every wall can create an image. For the next depths only
-                // the walls under the visibility cone of the parent image can, so ask the wall
-                // index instead of testing every wall
-                List<?> wallCandidates = null;
-                PreparedGeometry parentCone = null;
-                if (parent != null) {
-                    List<Integer> parentWedgeWalls = new ArrayList<>();
-                    queryParentWedge(wallsTree.getRoot(), parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
-                            new Wedge(parent), buildWalls, parentWedgeWalls);
-                    wallCandidates = parentWedgeWalls;
-                    parentCone = PreparedGeometryFactory.prepare(parent.getImageReceiverVisibilityCone());
-                }
-                int candidateCount = parent == null ? buildWalls.size() : wallCandidates.size();
-                for (int idCandidate = 0; idCandidate < candidateCount; idCandidate++) {
-                    int wallIndex = parent == null ? idCandidate : (Integer) wallCandidates.get(idCandidate);
-                    Wall wall = buildWalls.get(wallIndex);
-                    // The tests below only reject images, from the cheapest to the most expensive one
-                    BitSet imageSources = null;
-                    if (wallSources != null) {
-                        imageSources = (BitSet) wallSources[wallIndex].clone();
-                        if (parent != null) {
-                            imageSources.and(parentsSources.get(idParent));
-                        }
-                        if (imageSources.isEmpty()) {
-                            continue; // no source can get a path from this image or from its children
-                        }
-                    }
-                    Coordinate receiverImage;
-                    if (parent != null) {
-                        if(wall == parent.getWall()) {
-                            continue;
-                        } else {
-                            receiverImage = parent.getReceiverPos();
-                        }
-                    } else {
-                        if (wall.getLineSegment().distance(receiverCoordinates) < closeReceiverWallDistance) {
-                            continue; // the paths whose last reflection is on this wall are ignored
-                        }
-                        receiverImage = receiverCoordinates;
-                    }
-                    //Calculate the coordinate of projection
-                    Coordinate proj = wall.getLineSegment().project(receiverImage);
-                    Coordinate rcvMirror = new Coordinate(2 * proj.x - receiverImage.x,
-                            2 * proj.y - receiverImage.y, receiverImage.z);
-                    if(wall.getLineSegment().distance(rcvMirror) > maximumPropagationDistance) {
-                        // wall is too far from the receiver image, there is no receiver image
-                        continue;
-                    }
-                    // Walls that belong to a building (polygon) does not create image receiver
-                    // from the two sides of the wall
-                    // Exterior polygons are CW we can check if the receiver is on the reflective side of the wall
-                    // (on the exterior side of the wall)
-                    if(wall.getType() == ProfileBuilder.IntersectionType.BUILDING &&
-                            !wallPointTest(wall.getLineSegment(), receiverImage)) {
-                        continue;
-                    }
-                    if (lastDepth && imageSources != null) {
-                        // The image has no children, keep only the sources whose visitor accepts it (the envelope of
-                        // the visibility cone is tested once the cone is built)
-                        removeRejectingSources(new MirrorReceiver(rcvMirror, parent, wall), imageSources, sourceVisitors);
-                        if (imageSources.isEmpty()) {
-                            continue;
-                        }
-                    }
-                    if(parent != null) {
-                        // check if the wall is visible from the previous image receiver
-                        if(!parentCone.intersects(wallGeometries.get(wallIndex))) {
-                            continue; // this wall is out of the bound of the receiver visibility
-                        }
-                    }
-                    // create the visibility cone of this receiver image
-                    Polygon imageReceiverVisibilityCone = createWallReflectionVisibilityCone(rcvMirror,
-                            wall.getLineSegment(), maximumPropagationDistance, maximumDistanceFromWall);
-                    MirrorReceiver receiverResultNext = new MirrorReceiver(rcvMirror, parent, wall);
-                    receiverResultNext.setImageReceiverVisibilityCone(imageReceiverVisibilityCone);
-                    Envelope coneEnvelope = imageReceiverVisibilityCone.getEnvelopeInternal();
-                    if (imageSources == null) {
-                        mirrorReceiverTree.insert(coneEnvelope, receiverResultNext.copyWithoutCone());
-                    } else {
-                        addToSourceVisitors(receiverResultNext.copyWithoutCone(), coneEnvelope, imageSources,
-                                sourceVisitors, lastDepth);
-                    }
-                    nextParentsToProcess.add(receiverResultNext);
-                    nextParentsSources.add(imageSources);
-                    numberOfImageReceivers++;
-                    if(numberOfImageReceivers >= mirrorReceiverCapacity) {
-                        return;
-                    }
+                if (!addImages(parentsToProcess.get(idParent), parentsSources.get(idParent), lastDepth,
+                        nextParentsToProcess, nextParentsSources)) {
+                    return; // the maximum number of images is reached
                 }
             }
             parentsToProcess = nextParentsToProcess;
             parentsSources = nextParentsSources;
         }
         mirrorReceiverTree.build();
+    }
+
+    /**
+     * Create the images of the parent image on the walls (on the walls of the first depth if the parent is null), in
+     * its own method as the JIT compiles it better than the large constructor
+     * @param parentSources With known sources, the sources of the parent image, null at the first depth
+     * @param lastDepth True if the images have no children
+     * @return False if the maximum number of images is reached
+     */
+    private boolean addImages(MirrorReceiver parent, BitSet parentSources, boolean lastDepth,
+                              List<MirrorReceiver> nextParentsToProcess, List<BitSet> nextParentsSources) {
+        // For the first depth every wall can create an image. For the next depths only
+        // the walls under the visibility cone of the parent image can, so ask the wall
+        // index instead of testing every wall
+        List<?> wallCandidates = null;
+        PreparedGeometry parentCone = null;
+        if (parent != null) {
+            List<Integer> parentWedgeWalls = new ArrayList<>();
+            queryParentWedge(wallsTree.getRoot(), parent.getImageReceiverVisibilityCone().getEnvelopeInternal(),
+                    new Wedge(parent), buildWalls, parentWedgeWalls);
+            wallCandidates = parentWedgeWalls;
+            parentCone = PreparedGeometryFactory.prepare(parent.getImageReceiverVisibilityCone());
+        }
+        int candidateCount = parent == null ? buildWalls.size() : wallCandidates.size();
+        for (int idCandidate = 0; idCandidate < candidateCount; idCandidate++) {
+            int wallIndex = parent == null ? idCandidate : (Integer) wallCandidates.get(idCandidate);
+            Wall wall = buildWalls.get(wallIndex);
+            // The tests below only reject images, from the cheapest to the most expensive one
+            BitSet imageSources = null;
+            if (wallSources != null) {
+                imageSources = (BitSet) wallSources[wallIndex].clone();
+                if (parent != null) {
+                    imageSources.and(parentSources);
+                }
+                if (imageSources.isEmpty()) {
+                    continue; // no source can get a path from this image or from its children
+                }
+            }
+            Coordinate receiverImage;
+            if (parent != null) {
+                if(wall == parent.getWall()) {
+                    continue;
+                } else {
+                    receiverImage = parent.getReceiverPos();
+                }
+            } else {
+                if (wall.getLineSegment().distance(receiverCoordinate) < closeReceiverWallDistance) {
+                    continue; // the paths whose last reflection is on this wall are ignored
+                }
+                receiverImage = receiverCoordinate;
+            }
+            //Calculate the coordinate of projection
+            Coordinate proj = wall.getLineSegment().project(receiverImage);
+            Coordinate rcvMirror = new Coordinate(2 * proj.x - receiverImage.x,
+                    2 * proj.y - receiverImage.y, receiverImage.z);
+            if(wall.getLineSegment().distance(rcvMirror) > maximumPropagationDistance) {
+                // wall is too far from the receiver image, there is no receiver image
+                continue;
+            }
+            // Walls that belong to a building (polygon) does not create image receiver
+            // from the two sides of the wall
+            // Exterior polygons are CW we can check if the receiver is on the reflective side of the wall
+            // (on the exterior side of the wall)
+            if(wall.getType() == ProfileBuilder.IntersectionType.BUILDING &&
+                    !wallPointTest(wall.getLineSegment(), receiverImage)) {
+                continue;
+            }
+            if (lastDepth && imageSources != null) {
+                // The image has no children, keep only the sources whose visitor accepts it (the envelope of
+                // the visibility cone is tested once the cone is built)
+                removeRejectingSources(new MirrorReceiver(rcvMirror, parent, wall), imageSources, sourceVisitors);
+                if (imageSources.isEmpty()) {
+                    continue;
+                }
+            }
+            if(parent != null) {
+                // check if the wall is visible from the previous image receiver
+                if(!parentCone.intersects(wallGeometries.get(wallIndex))) {
+                    continue; // this wall is out of the bound of the receiver visibility
+                }
+            }
+            // create the visibility cone of this receiver image
+            Polygon imageReceiverVisibilityCone = createWallReflectionVisibilityCone(rcvMirror,
+                    wall.getLineSegment(), maximumPropagationDistance, maximumDistanceFromWall);
+            MirrorReceiver receiverResultNext = new MirrorReceiver(rcvMirror, parent, wall);
+            receiverResultNext.setImageReceiverVisibilityCone(imageReceiverVisibilityCone);
+            Envelope coneEnvelope = imageReceiverVisibilityCone.getEnvelopeInternal();
+            if (imageSources == null) {
+                mirrorReceiverTree.insert(coneEnvelope, receiverResultNext.copyWithoutCone());
+            } else {
+                addToSourceVisitors(receiverResultNext.copyWithoutCone(), coneEnvelope, imageSources,
+                        sourceVisitors, lastDepth);
+            }
+            nextParentsToProcess.add(receiverResultNext);
+            nextParentsSources.add(imageSources);
+            numberOfImageReceivers++;
+            if(numberOfImageReceivers >= mirrorReceiverCapacity) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
