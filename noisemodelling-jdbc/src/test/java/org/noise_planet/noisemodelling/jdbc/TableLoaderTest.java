@@ -115,6 +115,41 @@ public class TableLoaderTest {
         assertEquals(2, source.getNumPoints());
     }
 
+    /**
+     * A screen given with a HEIGHT over a ridge is split into 4 m flat panels, each one at its lowest ground Z
+     * plus HEIGHT, instead of a single flat top at the lowest ground Z of the whole screen (issue #909).
+     */
+    @Test
+    public void testScreenSplitIntoPanels() throws Exception {
+        try (Statement st = connection.createStatement()) {
+            st.execute("CREATE TABLE SCREENS(PK INT PRIMARY KEY, THE_GEOM GEOMETRY(LINESTRING), HEIGHT DOUBLE)");
+            st.execute("INSERT INTO SCREENS VALUES (1, 'LINESTRING (0 0, 100 0)', 3)");
+        }
+        ProfileBuilder profile = new ProfileBuilder();
+        for (double y : new double[] {-50, 50}) {
+            profile.addTopographicPoint(new Coordinate(0, y, 0));
+            profile.addTopographicPoint(new Coordinate(50, y, 5));
+            profile.addTopographicPoint(new Coordinate(100, y, 0));
+        }
+        profile.buildDemQueryStructure();
+        DefaultTableLoader.BuildingTableParameters parameters = new DefaultTableLoader.BuildingTableParameters();
+        parameters.buildingsTableName = "SCREENS";
+        List<Wall> walls = new ArrayList<>();
+        DefaultTableLoader.fetchCellBuildings(connection, parameters, new Envelope(-10, 110, -10, 10),
+                new ArrayList<>(), walls, profile, new GeometryFactory());
+
+        assertEquals(25, walls.size());
+        double maxTopZ = Double.NEGATIVE_INFINITY;
+        for (Wall wall : walls) {
+            assertEquals(4, wall.getLineSegment().getLength(), 1e-9);
+            assertEquals(Math.min(profile.getZGround(wall.p0()), profile.getZGround(wall.p1())) + 3, wall.p0().z, 1e-9);
+            assertEquals(wall.p0().z, wall.p1().z, 1e-9);
+            maxTopZ = Math.max(maxTopZ, wall.p0().z);
+        }
+        // Panel from x=48 to x=52, ground at 4.8 m on both ends
+        assertEquals(7.8, maxTopZ, 1e-9);
+    }
+
     @Test
     public void testClippedLineSources() throws Exception {
         try (Statement st = connection.createStatement()) {

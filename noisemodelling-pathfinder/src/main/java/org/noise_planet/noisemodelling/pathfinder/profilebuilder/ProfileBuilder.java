@@ -113,6 +113,9 @@ public class ProfileBuilder {
     /** List of processed LineObstructions. */
     public final List<LineObstruction> processedObstructions = new ArrayList<>();
 
+    /** Index in {@link #processedObstructions} of the walls of each screen, by screen primary key. */
+    private final Map<Long, List<Integer>> screenWallsByPk = new HashMap<>();
+
     /** Global envelope of the builder. */
     private Envelope envelope;
 
@@ -616,6 +619,14 @@ public class ProfileBuilder {
     }
 
     /**
+     * @param primaryKey Primary key of a screen
+     * @return Index in the processed obstructions of every wall of this screen
+     */
+    public List<Integer> getScreenWalls(long primaryKey) {
+        return screenWallsByPk.getOrDefault(primaryKey, Collections.emptyList());
+    }
+
+    /**
      * Retrieve the building list.
      * @return The building list.
      */
@@ -830,6 +841,9 @@ public class ProfileBuilder {
                 processedObstructions.add(w);
                 rtree.insert(lineSegment.toGeometry(FACTORY).getEnvelopeInternal(), processedObstructions.size()-1);
                 wallsRtree.insert(new Envelope(lineSegment.p0, lineSegment.p1), w);
+                if (wall.primaryKey >= 0) {
+                    screenWallsByPk.computeIfAbsent(wall.primaryKey, k -> new ArrayList<>()).add(processedObstructions.size() - 1);
+                }
             }
         }
         // Set buildings and walls unmodifiable
