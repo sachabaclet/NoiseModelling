@@ -101,6 +101,7 @@ public final class BuildingIntersectionPathVisitor implements ItemVisitor {
         this.input = input;
         pushedBuildingsWideAnglePoints.clear();
         pushedWallsPoints.clear();
+        pushedScreens.clear();
     }
 
     /**
