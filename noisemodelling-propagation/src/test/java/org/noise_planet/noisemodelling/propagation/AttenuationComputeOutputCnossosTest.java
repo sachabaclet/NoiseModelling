@@ -7375,14 +7375,14 @@ public class AttenuationComputeOutputCnossosTest {
         CnossosPath path = CnossosPathBuilder.computeCnossosPathsFromCutProfile(reflection,
                 builder.exactFrequencyArray, 0.0).getFirst();
         List<PointPath> points = path.getPointList();
-        assertEquals(List.of(PointPath.POINT_TYPE.SRCE, PointPath.POINT_TYPE.DIFH_RCRIT, PointPath.POINT_TYPE.REFL,
+        assertEquals(List.of(PointPath.POINT_TYPE.SRCE, PointPath.POINT_TYPE.REFL,
                         PointPath.POINT_TYPE.DIFH_RCRIT, PointPath.POINT_TYPE.RECV),
                 points.stream().map(p -> p.type).collect(Collectors.toList()));
         for (int i = 1; i < points.size(); i++) {
             assertTrue(points.get(i - 1).coordinate.x <= points.get(i).coordinate.x, "Point " + i + " out of profile order");
         }
-        // Source, terrain point, wall, ridge, receiver
-        double[][] expectedXY = {{10, 10}, {35.16, 22.58}, {50, 30}, {70, 20}, {90, 10}};
+        // Source, wall, ridge, receiver: only the Rayleigh point with the largest path difference is kept (#1075)
+        double[][] expectedXY = {{10, 10}, {50, 30}, {70, 20}, {90, 10}};
         Coordinate[] geom = path.asGeom().getCoordinates();
         assertEquals(expectedXY.length, geom.length);
         for (int i = 0; i < geom.length; i++) {
