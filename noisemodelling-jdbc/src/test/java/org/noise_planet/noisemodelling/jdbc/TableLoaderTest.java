@@ -18,13 +18,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.Envelope;
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.MultiLineString;
+import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.io.ParseException;
 import org.noise_planet.noisemodelling.emission.LineSource;
 import org.noise_planet.noisemodelling.emission.railway.RailWayParameters;
 import org.noise_planet.noisemodelling.jdbc.input.DefaultTableLoader;
 import org.noise_planet.noisemodelling.jdbc.input.SceneDatabaseInputSettings;
+import org.noise_planet.noisemodelling.jdbc.input.SceneWithEmission;
 import org.noise_planet.noisemodelling.jdbc.railway.RailWayLWGeom;
 import org.noise_planet.noisemodelling.jdbc.railway.RailWayLWIterator;
 import org.noise_planet.noisemodelling.jdbc.railway.RailwayPlatform;
@@ -64,6 +70,100 @@ public class TableLoaderTest {
     public void tearDown() throws Exception {
         if(connection != null) {
             connection.close();
+        }
+    }
+
+    /**
+     * A road that follows a DEM triangle edge must keep its geometry. Before the fix the DEM
+     * profile zigzagged, increasing the line length and the number of source points (issue #1093).
+     */
+    @Test
+    public void testLineSourceAlongDemTriangleEdge() throws Exception {
+        int x0 = 650000;
+        int y0 = 6860000;
+        try (Statement st = connection.createStatement()) {
+            st.execute("CREATE TABLE BUILDINGS(PK INT PRIMARY KEY, THE_GEOM GEOMETRY(POLYGON, 2154), HEIGHT DOUBLE)");
+            st.execute("CREATE TABLE ROADS_1093(PK INT PRIMARY KEY, THE_GEOM GEOMETRY(LINESTRINGZ, 2154))");
+            st.execute("INSERT INTO ROADS_1093 VALUES (1, ST_SetSRID('LINESTRING Z(" +
+                    (x0 - 150) + " " + y0 + " 0.05, " + (x0 + 150) + " " + y0 + " 0.05)'::GEOMETRY, 2154))");
+            st.execute("CREATE TABLE RECEIVERS_1093(PK INT PRIMARY KEY, THE_GEOM GEOMETRY(POINTZ, 2154))");
+            st.execute("INSERT INTO RECEIVERS_1093 VALUES (1, ST_SetSRID(ST_MakePoint(" + x0 + ", " + (y0 + 20) + ", 4), 2154))");
+            st.execute("CREATE TABLE DEM_1093(PK INT AUTO_INCREMENT PRIMARY KEY, THE_GEOM GEOMETRY(POINTZ, 2154))");
+            st.execute("INSERT INTO DEM_1093(THE_GEOM) SELECT ST_SetSRID(ST_MakePoint(" + x0 + " + a.X * 20, " +
+                    y0 + " + b.X * 20, 0), 2154) FROM SYSTEM_RANGE(-10, 10) a, SYSTEM_RANGE(-10, 10) b");
+        }
+        NoiseMapByReceiverMaker noiseMap = new NoiseMapByReceiverMaker("BUILDINGS", "ROADS_1093", "RECEIVERS_1093");
+        noiseMap.geometryFactory = new GeometryFactory();
+        noiseMap.setInputMode(SceneDatabaseInputSettings.INPUT_MODE.INPUT_MODE_ATTENUATION);
+        noiseMap.setDemTable("DEM_1093");
+        DefaultTableLoader loader = (DefaultTableLoader) noiseMap.getTableLoader();
+        loader.initialize(connection, noiseMap);
+
+        ProfileBuilder profile = new ProfileBuilder();
+        Envelope envelope = new Envelope(x0 - 200, x0 + 200, y0 - 200, y0 + 200);
+        loader.fetchCellDem(connection, envelope, profile);
+        profile.finishFeeding();
+        SceneWithEmission scene = new SceneWithEmission(profile, noiseMap.getSceneInputSettings());
+        loader.fetchCellSource(connection, envelope, scene, false);
+
+        assertEquals(1, scene.sourceGeometries.size());
+        Geometry source = scene.sourceGeometries.get(0);
+        assertInstanceOf(LineString.class, source);
+        assertEquals(300, source.getLength(), 1e-9);
+        assertEquals(2, source.getNumPoints());
+    }
+
+    @Test
+    public void testClippedLineSources() throws Exception {
+        try (Statement st = connection.createStatement()) {
+            st.execute("CREATE TABLE SOURCES(PK INTEGER PRIMARY KEY, THE_GEOM GEOMETRY)");
+            st.execute("INSERT INTO SOURCES VALUES "
+                    + "(1, 'LINESTRING Z (5 5 0.05, 12 8 0.05, 10 10 0.05)'),"
+                    + "(2, 'MULTILINESTRING Z ((1 1 0.05, 2 2 0.05), (5 5 0.05, 12 8 0.05, 10 10 0.05))'),"
+                    + "(3, 'LINESTRING Z (12 8 0.05, 10 10 0.05)'),"
+                    + "(4, 'POINT Z (10 10 0.05)')");
+        }
+        NoiseMapByReceiverMaker noiseMap = new NoiseMapByReceiverMaker("", "SOURCES", "");
+        noiseMap.geometryFactory = new GeometryFactory();
+        noiseMap.setInputMode(SceneDatabaseInputSettings.INPUT_MODE.INPUT_MODE_ATTENUATION);
+        DefaultTableLoader loader = (DefaultTableLoader) noiseMap.getTableLoader();
+        loader.initialize(connection, noiseMap);
+
+        for (boolean absoluteZ : new boolean[] {false, true}) {
+            noiseMap.setSourcesZIsAltitude(absoluteZ);
+            ProfileBuilder profile = new ProfileBuilder();
+            profile.addTopographicPoint(new Coordinate(-100, -100, 100));
+            profile.addTopographicPoint(new Coordinate(100, -100, 100));
+            profile.addTopographicPoint(new Coordinate(0, 100, 100));
+            profile.finishFeeding();
+            assertTrue(profile.hasDem());
+            SceneWithEmission scene = new SceneWithEmission(profile, noiseMap.getSceneInputSettings());
+            loader.fetchCellSource(connection, new Envelope(0, 10, 0, 10), scene, true);
+
+            assertEquals(3, scene.sourceGeometries.size());
+            assertFalse(scene.sourcesPk.contains(3L), "A boundary touch must not become a point source");
+            Geometry line = scene.sourceGeometries.get(scene.sourcesPk.indexOf(1L));
+            assertInstanceOf(LineString.class, line);
+            assertEquals(2, line.getNumPoints());
+            assertEquals(5, line.getCoordinates()[0].x, 1e-9);
+            assertEquals(10, line.getCoordinates()[1].x, 1e-9);
+            assertEquals(50.0 / 7, line.getCoordinates()[1].y, 1e-9);
+            Geometry multiLine = scene.sourceGeometries.get(scene.sourcesPk.indexOf(2L));
+            assertInstanceOf(MultiLineString.class, multiLine);
+            assertEquals(2, multiLine.getNumGeometries());
+            assertInstanceOf(Point.class, scene.sourceGeometries.get(scene.sourcesPk.indexOf(4L)));
+            for (Geometry source : scene.sourceGeometries) {
+                for (Coordinate coordinate : source.getCoordinates()) {
+                    assertEquals(absoluteZ ? 0.05 : 100.05, coordinate.getZ(), 1e-9);
+                }
+            }
+
+            SceneWithEmission unclipped = new SceneWithEmission(profile, noiseMap.getSceneInputSettings());
+            loader.fetchCellSource(connection, new Envelope(0, 10, 0, 10), unclipped, false);
+            assertEquals(4, unclipped.sourceGeometries.size());
+            Geometry road = unclipped.sourceGeometries.get(unclipped.sourcesPk.indexOf(1L));
+            assertEquals(3, road.getNumPoints());
+            assertEquals(12, road.getCoordinates()[1].x, 1e-9);
         }
     }
 

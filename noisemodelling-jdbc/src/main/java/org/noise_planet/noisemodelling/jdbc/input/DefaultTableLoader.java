@@ -14,6 +14,7 @@ import org.h2gis.utilities.dbtypes.DBTypes;
 import org.h2gis.utilities.dbtypes.DBUtils;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.geom.prep.PreparedPolygon;
+import org.locationtech.jts.geom.util.LineStringExtracter;
 import org.locationtech.jts.io.WKTWriter;
 import org.noise_planet.noisemodelling.emission.LineSource;
 import org.noise_planet.noisemodelling.emission.directivity.DirectivityRecord;
@@ -162,6 +163,11 @@ public class DefaultTableLoader implements NoiseMapByReceiverMaker.TableLoader {
             for (EmissionTableGenerator.STANDARD_PERIOD period : EmissionTableGenerator.STANDARD_PERIOD.values()) {
                 String periodFieldName = EmissionTableGenerator.STANDARD_PERIOD_VALUE[period.ordinal()];
                 frequencySet.addAll(readFrequenciesFromLwTable(noiseMapByReceiverMaker.getFrequencyFieldPrepend()+periodFieldName, sourceFields));
+            }
+            if(!noiseMapByReceiverMaker.getSourcesEmissionTableName().isEmpty()) {
+                // D, E and N are values of the PERIOD field, the band fields have no period suffix (ex. HZ63)
+                frequencySet.addAll(readFrequenciesFromLwTable(noiseMapByReceiverMaker.getFrequencyFieldPrepend(),
+                        JDBCUtilities.getColumnNames(connection, noiseMapByReceiverMaker.getSourcesEmissionTableName())));
             }
             frequencyArray = new ArrayList<>(frequencySet);
             exactFrequencyArray = new ArrayList<>();
@@ -817,7 +823,10 @@ public class DefaultTableLoader implements NoiseMapByReceiverMaker.TableLoader {
                     Geometry geo = rs.getGeometry();
                     if (geo != null) {
                         if (doIntersection) {
-                            geo = domainConstraint.intersection(geo);
+                            Geometry clipped = domainConstraint.intersection(geo);
+                            // Boundary-only contacts have no length and must not become point emitters.
+                            geo = geo instanceof LineString || geo instanceof MultiLineString
+                                    ? LineStringExtracter.getGeometry(clipped) : clipped;
                         }
                         if (!geo.isEmpty()) {
                             Coordinate[] coordinates = geo.getCoordinates();

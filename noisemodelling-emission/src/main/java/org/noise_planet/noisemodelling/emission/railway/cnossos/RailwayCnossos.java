@@ -43,6 +43,14 @@ import static org.noise_planet.noisemodelling.emission.utils.interpLinear.interp
 
 public class RailwayCnossos extends Railway {
 
+    /**
+     * Minimum speed used to determine the total effective roughness (Directive 2002/49/EC,
+     * consolidated Annex II, section 2.3.2): 50 km/h for heavy rail, 30 km/h for trams and
+     * light metro. This floor must not affect the vehicle flow calculation.
+     */
+    private static final double MIN_SPEED_HEAVY_RAIL = 50.;
+    private static final double MIN_SPEED_LIGHT_RAIL = 30.;
+
     public RailwayCnossos() {
     }
 
@@ -143,6 +151,29 @@ public class RailwayCnossos extends Railway {
         } catch (Exception e) {
             return 1.0; // default fallback
         }
+    }
+
+    /**
+     * Get the maximum speed of a vehicle
+     * @param typeVehicle Vehicle type identifier (e.g. "SNCF2")
+     * @return maximum speed of vehicle in km/h, or {@link Railway#NO_SPEED_LIMIT} when
+     * the vehicle has no valid speed limit
+     */
+    public double getMaxSpeed(String typeVehicle) {
+        JsonNode vMax = getVehicleNode(typeVehicle).path("Vmax");
+        if (!vMax.isNumber() || vMax.doubleValue() <= 0.) {
+            return NO_SPEED_LIMIT;
+        }
+        return vMax.doubleValue();
+    }
+
+    /**
+     * Get indication for heavy or light rail
+     * @param typeVehicle Vehicle type identifier (e.g. "SNCF2")
+     * @return true if light rail, false if heavy rail. A missing field defaults to heavy rail.
+     */
+    public boolean isLightRail(String typeVehicle) {
+        return getVehicleNode(typeVehicle).path("Lightrail").asBoolean(false);
     }
 
     /**
@@ -332,7 +363,8 @@ public class RailwayCnossos extends Railway {
         int curvature = trackParameters.getCurvature();
 
         // get speed of the vehicle
-        double speed = min(speedVehicle, min(speedTrack, speedCommercial));
+        double maxTrainSpeed = getMaxSpeed(typeVehicle);
+        double speed = min(min(speedVehicle, maxTrainSpeed), min(speedTrack, speedCommercial));
 
         boolean isTunnel = trackParameters.getIsTunnel();
         // %% Take into account the number of coach and the number of units
@@ -521,10 +553,14 @@ public class RailwayCnossos extends Railway {
     /**
      * Roughness Level.
      * linear interpolation wavelength to frequency
+     * <p>
+     * The vehicle speed is floored to the CNOSSOS minimum before converting wavelength to
+     * frequency (Directive 2002/49/EC, consolidated Annex II, section 2.3.2). The resulting
+     * total effective roughness is also used by the bridge source, formula (2.3.18).
      * @param typeVehicle vehicle data base
      * @param trackRoughnessId track Roughness reference
      * @param impactId  impact reference
-     * @param speed  impact reference
+     * @param speed vehicle speed in km/h
      * @return Lroughness(freq)
      **/
     private double[] getLWRoughness(String typeVehicle, String trackRoughnessId, String impactId, double speed) {
@@ -535,6 +571,8 @@ public class RailwayCnossos extends Railway {
         double[] lambdaToFreqLog = new double[35];
         double[] freqMedLog = new double[24];
         double[] Lambda = new double[35];
+        double calcSpeed = isLightRail(typeVehicle) ? max(MIN_SPEED_LIGHT_RAIL, speed) :
+                max(MIN_SPEED_HEAVY_RAIL, speed);
 
         // Resolve impact noise node once before the loop
         boolean hasImpactNoise = false;
@@ -550,7 +588,7 @@ public class RailwayCnossos extends Railway {
         double m = 33;
         for (int idLambda = 0; idLambda < 35; idLambda++) {
             Lambda[idLambda] = Math.pow(10, m / 10);
-            lambdaToFreqLog[idLambda] = Math.log10(speed / Lambda[idLambda] * 1000 / 3.6);
+            lambdaToFreqLog[idLambda] = Math.log10(calcSpeed / Lambda[idLambda] * 1000 / 3.6);
 
             roughnessTotLambda[idLambda] = Math.pow(10, getLRoughness(typeVehicle, trackRoughnessId, idLambda) / 10);
 
