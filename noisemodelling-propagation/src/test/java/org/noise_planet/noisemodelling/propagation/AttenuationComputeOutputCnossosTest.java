@@ -19,6 +19,9 @@ import org.noise_planet.noisemodelling.pathfinder.CutPlaneVisitor;
 import org.noise_planet.noisemodelling.pathfinder.DefaultCutPlaneVisitor;
 import org.noise_planet.noisemodelling.pathfinder.PathFinder;
 import org.noise_planet.noisemodelling.pathfinder.path.Scene;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointReceiver;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointSource;
+import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutPointTopography;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.CutProfile;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.ProfileBuilder;
 import org.noise_planet.noisemodelling.pathfinder.profilebuilder.ProfileBuilderDecorator;
@@ -7347,6 +7350,37 @@ public class AttenuationComputeOutputCnossosTest {
         for (int i = 0; i < geom.length; i++) {
             assertEquals(expectedXY[i][0], geom[i].x, DELTA_COORDS, "asGeom point " + i + " X");
             assertEquals(expectedXY[i][1], geom[i].y, DELTA_COORDS, "asGeom point " + i + " Y");
+        }
+    }
+
+    /**
+     * Two terrain bumps just below the line of sight both meet the Rayleigh criterion. Only the one with the
+     * largest path difference (the highest bump) must remain, with its S-O and O-R segments, whether it comes
+     * after or before the other candidate along the profile.
+     */
+    @Test
+    public void testRayleighKeepsOnlyLargestPathDifference() {
+        double[][] bumpHeightsAndExpectedX = {{1.8, 1.95, 60}, {1.95, 1.8, 30}};
+        for (double[] testCase : bumpHeightsAndExpectedX) {
+            CutProfile cutProfile = new CutProfile(new CutPointSource(new Coordinate(0, 0, 2)),
+                    new CutPointReceiver(new Coordinate(100, 0, 2)));
+            cutProfile.insertCutPoint(true,
+                    new CutPointTopography(new Coordinate(30, 0, testCase[0])),
+                    new CutPointTopography(new Coordinate(60, 0, testCase[1])));
+            cutProfile.cutPoints.forEach(cutPoint -> {
+                cutPoint.zGround = cutPoint instanceof CutPointTopography ? cutPoint.coordinate.z : 0;
+                cutPoint.groundCoefficient = 0;
+            });
+            CnossosPath path = CnossosPathBuilder.computeCnossosPathFromCutProfile(cutProfile,
+                    new ProfileBuilder().exactFrequencyArray, 0, false);
+
+            List<PointPath> rayleighPoints = path.getPointList().stream()
+                    .filter(p -> p.type == PointPath.POINT_TYPE.DIFH_RCRIT).toList();
+            assertEquals(1, rayleighPoints.size());
+            assertEquals(testCase[2], rayleighPoints.getFirst().coordinate.x, 1e-6);
+            assertEquals(2, path.getSegmentList().size());
+            assertEquals(testCase[2], path.getSegmentList().get(0).r.x, 1e-6);
+            assertEquals(testCase[2], path.getSegmentList().get(1).s.x, 1e-6);
         }
     }
 
