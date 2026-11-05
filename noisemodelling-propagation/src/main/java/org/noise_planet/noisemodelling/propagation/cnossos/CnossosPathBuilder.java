@@ -29,7 +29,8 @@ import static org.noise_planet.noisemodelling.pathfinder.utils.geometry.Geometry
  */
 public class CnossosPathBuilder {
     public static final double ALPHA0 = 2e-4;
-    private static final double EPSILON = 1e-7;
+    /** Tolerance of the reflection height tests, shared with the rejection of the reflection paths without topography */
+    private static final double EPSILON = CutProfile.REFLECTION_HEIGHT_TOLERANCE;
 
     public static void computeRayleighDiff(SegmentPath srSeg, CutProfile cutProfile, CnossosPath pathParameters,
                                      LineSegment dSR, List<SegmentPath> segments, List<PointPath> points,
@@ -322,39 +323,10 @@ public class CnossosPathBuilder {
         // Src if perceived source position from the receiver point of view
         Coordinate src = cutProfile.getSource().getCoordinate();
 
-        // Move then check reflection height if there is diffraction on the path
-        // (ReflectionRejectionCertifier in the pathfinder module repeats this test on the reflection profiles without
-        // topography, to reject paths before their topography is computed: keep both tests the same)
-        if(hullPointsIndices.size() > 2) {
-            for (int i = 1; i < hullPointsIndices.size(); i++) {
-                int i0 = hullPointsIndices.get(i - 1);
-                int i1 = hullPointsIndices.get(i);
-                LineSegment segmentHull = new LineSegment(pts2D.get(hullPointsIndices.get(i - 1)), pts2D.get(hullPointsIndices.get(i)));
-                for (int pointIndex = i0 + 1; pointIndex < i1; pointIndex++) {
-                    // Always use ORIGINAL cutPoints for wall altitude checks, not transformed ones
-                    final CutPoint originalPoint = cutProfile.cutPoints.get(pointIndex);
-                    // If the current point is the reflection point (not on the ground level)
-                    if (originalPoint instanceof CutPointReflection &&
-                            Double.compare(originalPoint.getCoordinate().z, originalPoint.getzGround()) != 0) {
-                        CutPointReflection cutPointReflection = (CutPointReflection) originalPoint;
-                        Coordinate interpolatedReflectionPoint = segmentHull.closestPoint(pts2D.get(pointIndex));
-
-                        // Get the actual wall altitude at the reflection point using ORIGINAL coordinates
-                        double wallAltitudeAtReflexionPoint = Vertex.interpolateZ(originalPoint.coordinate,
-                                cutPointReflection.wall.p0, cutPointReflection.wall.p1);
-
-                        // Check if the new elevation of the reflection point is not higher than the wall
-                        if(wallAltitudeAtReflexionPoint + EPSILON >= interpolatedReflectionPoint.y) {
-                            // update the reflection position in BOTH original cutPoint AND pts2D
-                            originalPoint.getCoordinate().setZ(interpolatedReflectionPoint.y);
-                            pts2D.get(pointIndex).setY(interpolatedReflectionPoint.y);
-                        } else {
-                            // Reflection is not valid, so the whole path is not valid
-                            return null;
-                        }
-                    }
-                }
-            }
+        // Move the reflection points up to the hull if there is diffraction on the path (in the ORIGINAL cut points
+        // and in pts2D): the path is not valid if a moved point is above its wall
+        if(!cutProfile.moveReflectionPointsToHull(pts2D, hullPointsIndices, 0, true)) {
+            return null;
         }
 
         // The path is valid, compute the ground (it does not depend on the height of the reflection points)

@@ -32,14 +32,12 @@ import java.util.List;
  * example) with the exact topography points of {@link ProfileBuilder#fetchTopographicProfile}. When a test is not
  * conclusive the path is not rejected here, it is computed as before. So the results are the same.
  * <p>
- * The tests on the hull depend on the code of CnossosPathBuilder (lift of the reflection points, hull inputs):
- * both must be kept the same.
+ * The height test is shared with CnossosPathBuilder. The topography tests depend on its hull inputs (topography
+ * points, wall points whose z is not their z ground): they must follow them.
  */
 final class ReflectionRejectionCertifier {
     /** Margin of the reflection height test */
     private static final double HEIGHT_MARGIN = 1e-6;
-    /** Same as CnossosPathBuilder.EPSILON */
-    private static final double CNOSSOS_EPSILON = 1e-7;
     /** Margin between the topography points and the hull */
     private static final double HULL_MARGIN = 1e-4;
     /** Length of the leg ends where the topography points are computed exactly */
@@ -61,6 +59,7 @@ final class ReflectionRejectionCertifier {
     private static final class ProfileWithoutTopography {
         final List<Coordinate> legPoints;
         final List<CutPoint> points = new ArrayList<>();
+        CutProfile cutProfile;
         /** Index in points of the first point of each leg, and of the receiver */
         final int[] legStart;
         /** Triangle of each leg end, as found by fetchTopographicProfile, looked up when needed */
@@ -142,11 +141,11 @@ final class ReflectionRejectionCertifier {
         receiver = new CutPointReceiver(legPoints.get(legCount));
         profile.legStart[legCount] = profile.points.size();
         profile.points.add(receiver);
-        CutProfile cutProfile = new CutProfile(source, receiver);
-        cutProfile.insertCutPoint(false,
+        profile.cutProfile = new CutProfile(source, receiver);
+        profile.cutProfile.insertCutPoint(false,
                 profile.points.subList(1, profile.points.size() - 1).toArray(CutPoint[]::new));
-        profile.pts2D = cutProfile.computePts2D();
-        profile.hull = cutProfile.getUpperHullIndices(profile.pts2D, false);
+        profile.pts2D = profile.cutProfile.computePts2D();
+        profile.hull = profile.cutProfile.getUpperHullIndices(profile.pts2D, false);
         if (profile.hull == null) {
             return null;
         }
@@ -178,33 +177,12 @@ final class ReflectionRejectionCertifier {
     }
 
     /**
-     * Height test of CnossosPathBuilder.computeCnossosPathFromCutProfile: with diffraction points, each reflection
-     * point between two hull vertices is moved to the hull segment, and the path is rejected if it is then above its
-     * wall.
+     * Height test of CnossosPathBuilder.computeCnossosPathFromCutProfile ({@link CutProfile#moveReflectionPointsToHull}),
+     * with a margin, without moving the reflection points
      * @return True if a moved reflection point is above its wall by more than the margin
      */
     private static boolean isRejectedByReflectionHeight(ProfileWithoutTopography profile) {
-        List<Integer> hull = profile.hull;
-        if (hull.size() <= 2) {
-            return false;
-        }
-        for (int i = 1; i < hull.size(); i++) {
-            int i0 = hull.get(i - 1);
-            int i1 = hull.get(i);
-            LineSegment hullSegment = new LineSegment(profile.pts2D.get(i0), profile.pts2D.get(i1));
-            for (int pointIndex = i0 + 1; pointIndex < i1; pointIndex++) {
-                CutPoint point = profile.points.get(pointIndex);
-                if (point instanceof CutPointReflection && Double.compare(point.getCoordinate().z, point.getzGround()) != 0) {
-                    LineSegment wall = ((CutPointReflection) point).wall;
-                    double movedHeight = hullSegment.closestPoint(profile.pts2D.get(pointIndex)).y;
-                    double wallHeight = Vertex.interpolateZ(point.coordinate, wall.p0, wall.p1);
-                    if (movedHeight > wallHeight + CNOSSOS_EPSILON + HEIGHT_MARGIN) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+        return !profile.cutProfile.moveReflectionPointsToHull(profile.pts2D, profile.hull, HEIGHT_MARGIN, false);
     }
 
     /**

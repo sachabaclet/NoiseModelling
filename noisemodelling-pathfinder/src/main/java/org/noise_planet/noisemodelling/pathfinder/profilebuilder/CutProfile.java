@@ -13,6 +13,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.locationtech.jts.algorithm.ConvexHull;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.LineSegment;
+import org.locationtech.jts.triangulate.quadedge.Vertex;
 import org.noise_planet.noisemodelling.pathfinder.path.Scene;
 import org.noise_planet.noisemodelling.pathfinder.utils.geometry.CurvedProfileGenerator;
 import org.noise_planet.noisemodelling.pathfinder.utils.geometry.JTSUtility;
@@ -392,6 +394,51 @@ public class CutProfile {
 
     public List<Integer> getConvexHullIndices(List<Coordinate> coordinates2d) {
         return getConvexHullIndices(coordinates2d, false);
+    }
+
+    /** Tolerance of the reflection height tests: a reflection point may be this much above its wall */
+    public static final double REFLECTION_HEIGHT_TOLERANCE = 1e-7;
+
+    /**
+     * Height test of the reflection points of a profile with diffraction: each reflection point (not at ground
+     * level) between two vertices of the convex hull is moved up to the hull segment, and must stay below the top
+     * of its wall. Used by the path computation (CnossosPathBuilder), which moves the points, and by the rejection of
+     * reflection paths before their topography is computed ({@link ReflectionRejectionCertifier}), which does not.
+     * @param pts2D 2D coordinates of the cut points (distance, z)
+     * @param hullIndices Indices of the convex hull vertices, from the source to the receiver
+     * @param margin Added to {@link #REFLECTION_HEIGHT_TOLERANCE} (m)
+     * @param moveReflectionPoints True to set the z of the reflection points and of their 2D coordinates to their
+     *                             height on the hull, as long as they pass the test
+     * @return False if a moved reflection point is above its wall by more than the tolerance plus the margin
+     */
+    public boolean moveReflectionPointsToHull(List<Coordinate> pts2D, List<Integer> hullIndices, double margin,
+                                              boolean moveReflectionPoints) {
+        if (hullIndices.size() <= 2) {
+            return true;
+        }
+        for (int i = 1; i < hullIndices.size(); i++) {
+            int i0 = hullIndices.get(i - 1);
+            int i1 = hullIndices.get(i);
+            LineSegment hullSegment = new LineSegment(pts2D.get(i0), pts2D.get(i1));
+            for (int pointIndex = i0 + 1; pointIndex < i1; pointIndex++) {
+                CutPoint point = cutPoints.get(pointIndex);
+                if (!(point instanceof CutPointReflection)
+                        || Double.compare(point.getCoordinate().z, point.getzGround()) == 0) {
+                    continue;
+                }
+                LineSegment wall = ((CutPointReflection) point).wall;
+                double movedHeight = hullSegment.closestPoint(pts2D.get(pointIndex)).y;
+                double wallHeight = Vertex.interpolateZ(point.coordinate, wall.p0, wall.p1);
+                if (!(wallHeight + REFLECTION_HEIGHT_TOLERANCE + margin >= movedHeight)) {
+                    return false;
+                }
+                if (moveReflectionPoints) {
+                    point.getCoordinate().setZ(movedHeight);
+                    pts2D.get(pointIndex).setY(movedHeight);
+                }
+            }
+        }
+        return true;
     }
 
 
