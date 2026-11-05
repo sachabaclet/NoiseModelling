@@ -20,7 +20,6 @@ import org.noise_planet.noisemodelling.pathfinder.utils.geometry.Orientation;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,51 +133,60 @@ public class CutProfile {
     /**
      * Same result as insertCutPoint with the sort, when the points between the source and the receiver are already
      * sorted by distance from the source: the inserted points are sorted, then merged with them, before the points at
-     * the same distance as with the stable sort. Each distance is computed once.
+     * the same distance as with the stable sort. Each distance is computed once, the points and their distances are
+     * kept in arrays. The inserted points are sorted with an insertion sort: they are few, or already sorted (the
+     * topography points come in the order of the triangle walk), so it is faster than a sort with a comparator.
      * @return False if these points are not sorted or one point is a source or a receiver (nothing is done)
      */
     private boolean mergeIntoSortedCutPoints(CutPointSource sourcePoint, CutPointReceiver receiverPoint,
                                              CutPoint[] cutPointsToInsert) {
-        DistancePoint[] sortedPoints = withDistances(cutPoints.subList(1, cutPoints.size() - 1), sourcePoint.coordinate);
-        for (int i = 0; i < sortedPoints.length; i++) {
-            if (isSourceOrReceiver(sortedPoints[i].cutPoint)
-                    || (i > 0 && Double.compare(sortedPoints[i - 1].distance, sortedPoints[i].distance) > 0)) {
+        Coordinate c0 = sourcePoint.coordinate;
+        int sortedCount = cutPoints.size() - 2;
+        CutPoint[] sortedPoints = new CutPoint[sortedCount];
+        double[] sortedDistances = new double[sortedCount];
+        for (int i = 0; i < sortedCount; i++) {
+            CutPoint cutPoint = cutPoints.get(i + 1);
+            double distance = JTSUtility.dist2D(cutPoint.coordinate, c0);
+            if (isSourceOrReceiver(cutPoint) || (i > 0 && Double.compare(sortedDistances[i - 1], distance) > 0)) {
                 return false;
             }
+            sortedPoints[i] = cutPoint;
+            sortedDistances[i] = distance;
         }
-        DistancePoint[] insertedPoints = withDistances(Arrays.asList(cutPointsToInsert), sourcePoint.coordinate);
-        for (DistancePoint insertedPoint : insertedPoints) {
-            if (isSourceOrReceiver(insertedPoint.cutPoint)) {
+        int insertedCount = cutPointsToInsert.length;
+        CutPoint[] insertedPoints = new CutPoint[insertedCount];
+        double[] insertedDistances = new double[insertedCount];
+        for (int i = 0; i < insertedCount; i++) {
+            CutPoint cutPoint = cutPointsToInsert[i];
+            if (isSourceOrReceiver(cutPoint)) {
                 return false;
             }
+            // same order as CutPointDistanceComparator, stable insertion sort
+            double distance = JTSUtility.dist2D(cutPoint.coordinate, c0);
+            int j = i;
+            while (j > 0 && Double.compare(insertedDistances[j - 1], distance) > 0) {
+                insertedPoints[j] = insertedPoints[j - 1];
+                insertedDistances[j] = insertedDistances[j - 1];
+                j--;
+            }
+            insertedPoints[j] = cutPoint;
+            insertedDistances[j] = distance;
         }
-        // same order as CutPointDistanceComparator, stable sort
-        Arrays.sort(insertedPoints, Comparator.comparingDouble(DistancePoint::distance));
         cutPoints.clear();
+        cutPoints.ensureCapacity(sortedCount + insertedCount + 2);
         cutPoints.add(sourcePoint);
         int inserted = 0;
-        for (DistancePoint sortedPoint : sortedPoints) {
-            while (inserted < insertedPoints.length
-                    && Double.compare(insertedPoints[inserted].distance, sortedPoint.distance) <= 0) {
-                cutPoints.add(insertedPoints[inserted++].cutPoint);
+        for (int i = 0; i < sortedCount; i++) {
+            while (inserted < insertedCount && Double.compare(insertedDistances[inserted], sortedDistances[i]) <= 0) {
+                cutPoints.add(insertedPoints[inserted++]);
             }
-            cutPoints.add(sortedPoint.cutPoint);
+            cutPoints.add(sortedPoints[i]);
         }
-        while (inserted < insertedPoints.length) {
-            cutPoints.add(insertedPoints[inserted++].cutPoint);
+        while (inserted < insertedCount) {
+            cutPoints.add(insertedPoints[inserted++]);
         }
         cutPoints.add(receiverPoint);
         return true;
-    }
-
-    private record DistancePoint(CutPoint cutPoint, double distance) { }
-
-    private static DistancePoint[] withDistances(List<CutPoint> points, Coordinate c0) {
-        DistancePoint[] distancePoints = new DistancePoint[points.size()];
-        for (int i = 0; i < distancePoints.length; i++) {
-            distancePoints[i] = new DistancePoint(points.get(i), JTSUtility.dist2D(points.get(i).coordinate, c0));
-        }
-        return distancePoints;
     }
 
     private static boolean isSourceOrReceiver(CutPoint cutPoint) {
