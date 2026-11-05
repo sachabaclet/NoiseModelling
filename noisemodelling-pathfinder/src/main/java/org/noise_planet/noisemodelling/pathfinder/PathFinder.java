@@ -753,6 +753,62 @@ public class PathFinder {
     }
 
     /**
+     * @return True if the reflection paths can be rejected before their topography is computed: only the homogeneous
+     * path is computed, the profiles are not cut at the first obstacle, and there is a DEM
+     */
+    private boolean canRejectReflectionsWithoutTopography() {
+        return !data.computeFavourablePaths && data.computeVerticalDiffraction && data.profileBuilder.hasDem();
+    }
+
+    /**
+     * @return Source, reflection points (from the source), receiver: the ends of the legs of the reflection path
+     */
+    private static List<Coordinate> getReflectionLegPoints(SourcePointInfo src, ReceiverPointInfo rcv,
+                                                           List<MirrorReceiver> rayPath) {
+        List<Coordinate> legPoints = new ArrayList<>(rayPath.size() + 2);
+        legPoints.add(src.position);
+        for (MirrorReceiver reflection : rayPath) {
+            legPoints.add(reflection.getReflectionPosition());
+        }
+        legPoints.add(rcv.position);
+        return legPoints;
+    }
+
+    /**
+     * Compute the building, wall and ground cut points of each leg of a reflection path, then test whether the path
+     * is rejected without its topography
+     * @return The cut points of each leg, to compute the profiles of the legs, or null if the path is rejected
+     */
+    private ProfileBuilder.ObstructionCut[] computeObstructionCutsUnlessRejected(List<Coordinate> legPoints,
+                                                                                List<MirrorReceiver> rayPath) {
+        ProfileBuilder.ObstructionCut[] obstructionCuts = new ProfileBuilder.ObstructionCut[legPoints.size() - 1];
+        for (int leg = 0; leg < obstructionCuts.length; leg++) {
+            obstructionCuts[leg] = data.profileBuilder.getObstructionCut(legPoints.get(leg), legPoints.get(leg + 1));
+        }
+        List<LineSegment> reflectionWalls = new ArrayList<>(rayPath.size());
+        for (MirrorReceiver reflection : rayPath) {
+            reflectionWalls.add(reflection.getWall().getLineSegment());
+        }
+        if (data.profileBuilder.isReflectionCertainlyRejected(legPoints, obstructionCuts, reflectionWalls)) {
+            return null;
+        }
+        return obstructionCuts;
+    }
+
+    /**
+     * @param obstructionCuts Cut points of the legs computed beforehand, or null
+     * @return The profile of a leg of a reflection path
+     */
+    private CutProfile getReflectionLegProfile(Coordinate start, Coordinate end,
+                                               ProfileBuilder.ObstructionCut[] obstructionCuts, int leg) {
+        if (obstructionCuts == null) {
+            return data.profileBuilder.getProfile(start, end, data.defaultGroundAttenuation,
+                    !data.computeVerticalDiffraction);
+        }
+        return data.profileBuilder.getProfile(start, end, data.defaultGroundAttenuation, obstructionCuts[leg]);
+    }
+
+    /**
      *
      * @param rcv Receiver data
      * @param src Source data
@@ -843,9 +899,19 @@ public class PathFinder {
             if (!data.computeFavourablePaths && isReflectionAboveWall(rayPath)) {
                 continue;
             }
+            // Most of the other paths are rejected by the height of their reflection points once moved up to the
+            // convex hull of the profile, which can often be decided before the topography is computed
+            ProfileBuilder.ObstructionCut[] obstructionCuts = null;
+            if (canRejectReflectionsWithoutTopography()) {
+                obstructionCuts = computeObstructionCutsUnlessRejected(getReflectionLegPoints(src, rcv, rayPath),
+                        rayPath);
+                if (obstructionCuts == null) {
+                    continue;
+                }
+            }
             // Compute direct path between source and first reflection point, add profile to the data
-            CutProfile segmentCutProfile = data.profileBuilder.getProfile(src.position, rayPath.get(0).getReflectionPosition(),
-                    data.defaultGroundAttenuation, !data.computeVerticalDiffraction);
+            CutProfile segmentCutProfile = getReflectionLegProfile(src.position,
+                    rayPath.get(0).getReflectionPosition(), obstructionCuts, 0);
             if(!segmentCutProfile.isFreeField() && !data.computeVerticalDiffraction) {
                 // (maybe there is a blocking building/dem, and we disabled diffraction)
                 continue;
@@ -860,8 +926,8 @@ public class PathFinder {
             for (int idPt = 0; idPt < rayPath.size() - 1; idPt++) {
                 MirrorReceiver firstPoint = rayPath.get(idPt);
                 MirrorReceiver secondPoint = rayPath.get(idPt + 1);
-                segmentCutProfile = data.profileBuilder.getProfile(firstPoint.getReflectionPosition(),
-                        secondPoint.getReflectionPosition(), data.defaultGroundAttenuation, !data.computeVerticalDiffraction);
+                segmentCutProfile = getReflectionLegProfile(firstPoint.getReflectionPosition(),
+                        secondPoint.getReflectionPosition(), obstructionCuts, idPt + 1);
                 if(!segmentCutProfile.isFreeField() && !data.computeVerticalDiffraction) {
                     // (maybe there is a blocking building/dem, and we disabled diffraction)
                     validReflection = false;
@@ -875,8 +941,8 @@ public class PathFinder {
                 continue;
             }
             // Compute direct path between receiver and last reflection point, add profile to the data
-            segmentCutProfile = data.profileBuilder.getProfile(rayPath.get(rayPath.size() - 1).getReflectionPosition(),
-                    rcv.position, data.defaultGroundAttenuation, !data.computeVerticalDiffraction);
+            segmentCutProfile = getReflectionLegProfile(rayPath.get(rayPath.size() - 1).getReflectionPosition(),
+                    rcv.position, obstructionCuts, rayPath.size());
             if(!segmentCutProfile.isFreeField() && !data.computeVerticalDiffraction) {
                 // (maybe there is a blocking building/dem, and we disabled diffraction)
                 continue;

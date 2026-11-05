@@ -111,6 +111,8 @@ public class ProfileBuilder {
     private List<Coordinate> vertices = new ArrayList<>();
     /** Query structure for DEM triangles */
     private STRtree topoTree;
+    /** Test of the reflection paths without topography, null without DEM */
+    private ReflectionRejectionCertifier reflectionRejectionCertifier;
     /** Envelope of each triangle, as inserted in {@link #topoTree} */
     private Envelope[] triangleEnvelopes;
     /** For each cell of a regular grid, the triangles whose envelope is within one meter of the cell, in the order of a
@@ -795,6 +797,9 @@ public class ProfileBuilder {
             }
             topoTree.build();
             buildTriangleGrid();
+            TerrainMaxGrid terrainMaxGrid = TerrainMaxGrid.build(topoTriangles, vertices);
+            reflectionRejectionCertifier = terrainMaxGrid == null ? null
+                    : new ReflectionRejectionCertifier(this, terrainMaxGrid);
             topoPoints.clear();
             topoLines.clear();
         }
@@ -988,6 +993,25 @@ public class ProfileBuilder {
      * @return Cutting profile.
      */
     public CutProfile getProfile(Coordinate sourceCoordinate, Coordinate receiverCoordinate, double defaultGroundAttenuation, boolean stopAtObstacleOverSourceReceiver) {
+        return getProfile(sourceCoordinate, receiverCoordinate, defaultGroundAttenuation,
+                stopAtObstacleOverSourceReceiver, null);
+    }
+
+    /**
+     * Same as {@link #getProfile(Coordinate, Coordinate, double, boolean)} without stop at obstacle, with the building,
+     * wall and ground effect cut points already computed by {@link #getObstructionCut(Coordinate, Coordinate)}
+     */
+    public CutProfile getProfile(Coordinate sourceCoordinate, Coordinate receiverCoordinate,
+                                 double defaultGroundAttenuation, ObstructionCut obstructionCut) {
+        return getProfile(sourceCoordinate, receiverCoordinate, defaultGroundAttenuation, false, obstructionCut);
+    }
+
+    /**
+     * @param obstructionCut The building, wall and ground effect cut points, null to compute them
+     */
+    private CutProfile getProfile(Coordinate sourceCoordinate, Coordinate receiverCoordinate,
+                                  double defaultGroundAttenuation, boolean stopAtObstacleOverSourceReceiver,
+                                  ObstructionCut obstructionCut) {
         CutPointSource sourcePoint  = new CutPointSource(sourceCoordinate);
         CutPointReceiver receiverPoint = new CutPointReceiver(receiverCoordinate);
 
@@ -1013,7 +1037,10 @@ public class ProfileBuilder {
         }
 
         //Add Buildings/Walls and Ground effect transition points
-        if(rtree != null) {
+        if(rtree != null && obstructionCut != null) {
+            profile.hasBuildingIntersection |= obstructionCut.hasBuildingIntersection;
+            profile.insertCutPoint(true, obstructionCut.cutPoints);
+        } else if(rtree != null) {
             LineSegment fullLine = new LineSegment(sourceCoordinate, receiverCoordinate);
             addGroundBuildingCutPts(fullLine, profile, stopAtObstacleOverSourceReceiver);
             if(stopAtObstacleOverSourceReceiver && profile.hasBuildingIntersection) {
@@ -1194,6 +1221,63 @@ public class ProfileBuilder {
      *                                        receiverCoordinate, stop computing and set #CutProfile.hasBuildingInter to buildings in profile data
      */
     private void addGroundBuildingCutPts(LineSegment fullLine, CutProfile profile, boolean stopAtObstacleOverSourceReceiver) {
+        List<CutPoint> newCutPoints = new ArrayList<>();
+        try {
+            collectGroundBuildingCutPts(fullLine, profile, stopAtObstacleOverSourceReceiver, newCutPoints);
+        } finally {
+            profile.insertCutPoint(true, newCutPoints.toArray(CutPoint[]::new));
+        }
+    }
+
+    /**
+     * The building, wall and ground effect cut points of a segment. They do not depend on the topography, so they can
+     * be computed before it.
+     */
+    public static final class ObstructionCut {
+        final CutPoint[] cutPoints;
+        final boolean hasBuildingIntersection;
+
+        private ObstructionCut(CutPoint[] cutPoints, boolean hasBuildingIntersection) {
+            this.cutPoints = cutPoints;
+            this.hasBuildingIntersection = hasBuildingIntersection;
+        }
+    }
+
+    /**
+     * @return The building, wall and ground effect cut points that {@link #getProfile(Coordinate, Coordinate, double,
+     * boolean)} without stop at obstacle adds to the profile from p0 to p1
+     */
+    public ObstructionCut getObstructionCut(Coordinate p0, Coordinate p1) {
+        List<CutPoint> newCutPoints = new ArrayList<>();
+        // only gets hasBuildingIntersection
+        CutProfile profile = new CutProfile(new CutPointSource(p0), new CutPointReceiver(p1));
+        if(rtree != null) {
+            collectGroundBuildingCutPts(new LineSegment(p0, p1), profile, false, newCutPoints);
+        }
+        return new ObstructionCut(newCutPoints.toArray(CutPoint[]::new), profile.hasBuildingIntersection);
+    }
+
+    /**
+     * Decide, without computing the topography, that CnossosPathBuilder rejects the homogeneous path of a reflection
+     * profile because a reflection point moved up to the convex hull of the profile is above its wall
+     * (see {@link ReflectionRejectionCertifier}). Use it only when the favourable paths are not computed.
+     * @param legPoints Source, reflection points (in the order from the source), receiver
+     * @param obstructionCuts Cut points of each leg, from {@link #getObstructionCut(Coordinate, Coordinate)}
+     * @param reflectionWalls Wall of each reflection point
+     * @return True if the path is certainly rejected, false if it is not or if it is unknown
+     */
+    public boolean isReflectionCertainlyRejected(List<Coordinate> legPoints, ObstructionCut[] obstructionCuts,
+                                                 List<LineSegment> reflectionWalls) {
+        return reflectionRejectionCertifier != null &&
+                reflectionRejectionCertifier.isCertainlyRejected(legPoints, obstructionCuts, reflectionWalls);
+    }
+
+    /**
+     * Same as {@link #addGroundBuildingCutPts}, the cut points are added to newCutPoints (in the order of the
+     * obstructions along the line, not sorted) instead of the profile, that only gets hasBuildingIntersection
+     */
+    private void collectGroundBuildingCutPts(LineSegment fullLine, CutProfile profile,
+                                             boolean stopAtObstacleOverSourceReceiver, List<CutPoint> newCutPoints) {
         // Segmented fullLine, the objects are processed in the order of the rTree queries made with the envelope of
         // each segment: by first segment whose envelope intersects the object envelope, then in tree order.
         // A single query lists the objects near fullLine (the others cannot intersect it), in tree order.
@@ -1207,59 +1291,54 @@ public class ProfileBuilder {
                 firstLines[k]++;
             }
         }
-        List<CutPoint> newCutPoints = new ArrayList<>();
         // getIntersection returns an internal coordinate, it must be copied before the intersector is reused
         RobustLineIntersector intersector = new RobustLineIntersector();
-        try {
-            for (int j = 0; j < lines.size()
-                    && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
-                for (int k = 0; k < firstLines.length; k++) {
-                    if (firstLines[k] != j) {
-                        continue;
+        for (int j = 0; j < lines.size()
+                && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
+            for (int k = 0; k < firstLines.length; k++) {
+                if (firstLines[k] != j) {
+                    continue;
+                }
+                int i = obstructionItem[nearNodes[k]];
+                LineObstruction facetLine = processedObstructions.get(i);
+                intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
+                Coordinate intersection = intersector.hasIntersection() ? intersector.getIntersection(0) : null;
+                if (intersection != null) {
+                    intersection = new Coordinate(intersection);
+                    if (!isNaN(facetLine.line.p0.z) && !isNaN(facetLine.line.p1.z)) {
+                        // same z in the line, so useless to compute interpolation between points
+                        if (Double.compare(facetLine.line.p0.z, facetLine.line.p1.z) == 0) {
+                            intersection.z = facetLine.line.p0.z;
+                        } else {
+                            intersection.z = Vertex.interpolateZ(intersection, facetLine.line.p0, facetLine.line.p1);
+                        }
                     }
-                    int i = obstructionItem[nearNodes[k]];
-                    LineObstruction facetLine = processedObstructions.get(i);
-                    intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
-                    Coordinate intersection = intersector.hasIntersection() ? intersector.getIntersection(0) : null;
-                    if (intersection != null) {
-                        intersection = new Coordinate(intersection);
-                        if (!isNaN(facetLine.line.p0.z) && !isNaN(facetLine.line.p1.z)) {
-                            // same z in the line, so useless to compute interpolation between points
-                            if (Double.compare(facetLine.line.p0.z, facetLine.line.p1.z) == 0) {
-                                intersection.z = facetLine.line.p0.z;
-                            } else {
-                                intersection.z = Vertex.interpolateZ(intersection, facetLine.line.p0, facetLine.line.p1);
-                            }
+                    if (facetLine instanceof Wall) {
+                        Wall facetWall = (Wall) facetLine;
+                        switch (facetWall.type) {
+                            case BUILDING:
+                                if (!processBuilding(i, intersection, facetWall, fullLine, newCutPoints,
+                                        stopAtObstacleOverSourceReceiver, profile)) {
+                                    return;
+                                }
+                                break;
+                            case WALL:
+                                if (!processWall(i, intersection, facetWall, fullLine, newCutPoints,
+                                        stopAtObstacleOverSourceReceiver, profile)) {
+                                    return;
+                                }
+                                break;
                         }
-                        if (facetLine instanceof Wall) {
-                            Wall facetWall = (Wall) facetLine;
-                            switch (facetWall.type) {
-                                case BUILDING:
-                                    if (!processBuilding(i, intersection, facetWall, fullLine, newCutPoints,
-                                            stopAtObstacleOverSourceReceiver, profile)) {
-                                        return;
-                                    }
-                                    break;
-                                case WALL:
-                                    if (!processWall(i, intersection, facetWall, fullLine, newCutPoints,
-                                            stopAtObstacleOverSourceReceiver, profile)) {
-                                        return;
-                                    }
-                                    break;
-                            }
-                        }
-                        if (facetLine instanceof GroundLine) {
-                            GroundLine facetGroundLine = (GroundLine) facetLine;
-                            if (!processGroundEffect(i, intersection, facetGroundLine, fullLine, newCutPoints,
-                                    stopAtObstacleOverSourceReceiver, profile)) {
-                                return;
-                            }
+                    }
+                    if (facetLine instanceof GroundLine) {
+                        GroundLine facetGroundLine = (GroundLine) facetLine;
+                        if (!processGroundEffect(i, intersection, facetGroundLine, fullLine, newCutPoints,
+                                stopAtObstacleOverSourceReceiver, profile)) {
+                            return;
                         }
                     }
                 }
             }
-        } finally {
-            profile.insertCutPoint(true, newCutPoints.toArray(CutPoint[]::new));
         }
     }
 

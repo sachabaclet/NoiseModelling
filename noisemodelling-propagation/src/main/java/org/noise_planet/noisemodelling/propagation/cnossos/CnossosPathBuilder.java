@@ -323,6 +323,8 @@ public class CnossosPathBuilder {
         Coordinate src = cutProfile.getSource().getCoordinate();
 
         // Move then check reflection height if there is diffraction on the path
+        // (ReflectionRejectionCertifier in the pathfinder module repeats this test on the reflection profiles without
+        // topography, to reject paths before their topography is computed: keep both tests the same)
         if(hullPointsIndices.size() > 2) {
             for (int i = 1; i < hullPointsIndices.size(); i++) {
                 int i0 = hullPointsIndices.get(i - 1);
