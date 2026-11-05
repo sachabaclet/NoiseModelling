@@ -111,6 +111,17 @@ public class ProfileBuilder {
     private List<Coordinate> vertices = new ArrayList<>();
     /** Query structure for DEM triangles */
     private STRtree topoTree;
+    /** Envelope of each triangle, as inserted in {@link #topoTree} */
+    private Envelope[] triangleEnvelopes;
+    /** For each cell of a regular grid, the triangles whose envelope is within one meter of the cell, in the order of a
+     * {@link #topoTree} query */
+    private int[][] triangleGrid;
+    private double triangleGridX;
+    private double triangleGridY;
+    private int triangleGridColumns;
+    private int triangleGridRows;
+    /** Size of the cells of the triangle grid: the median size of the triangles, with at most 4 million cells */
+    private double triangleGridCellSize = 25;
 
     /** List of ground effects. */
     private final List<GroundAbsorption> groundAbsorptions = new ArrayList<>();
@@ -763,6 +774,7 @@ public class ProfileBuilder {
 
             //Feed the RTree
             topoTree = new STRtree(topoNodeCapacity);
+            triangleEnvelopes = new Envelope[topoTriangles.size()];
             vertices = layerDelaunay.getVertices();
 
             // wallIndex set will merge shared triangle segments
@@ -779,8 +791,10 @@ public class ProfileBuilder {
                 final Coordinate vC = vertices.get(tri.getC());
                 triangleEnvelope.expandToInclude(vC);
                 topoTree.insert(triangleEnvelope, i);
+                triangleEnvelopes[i] = triangleEnvelope;
             }
             topoTree.build();
+            buildTriangleGrid();
             topoPoints.clear();
             topoLines.clear();
         }
@@ -1404,7 +1418,7 @@ public class ProfileBuilder {
      */
     private int getNextTri(final int triIndex,
                            final LineSegment propagationLine,
-                           HashSet<Integer> navigationHistory, double currentDistance,
+                           TriangleHistory navigationHistory, double currentDistance,
                            final Coordinate segmentIntersection) {
         final Triangle tri = topoTriangles.get(triIndex);
         final Triangle triNeighbors = topoNeighbors.get(triIndex);
@@ -1487,6 +1501,39 @@ public class ProfileBuilder {
 
 
     /**
+     * For each thread: the walk stamp of each triangle, and the stamp of the last walk. A walk marks the triangles it
+     * visits with its own stamp, so the visited test is an array read and the array is not cleared between walks.
+     * It takes 4 bytes per triangle for each thread that computes profiles.
+     */
+    private final ThreadLocal<int[][]> walkStamps =
+            ThreadLocal.withInitial(() -> new int[][]{new int[topoTriangles.size()], {0}});
+
+    /** Triangles visited by a walk, the same answers as a HashSet of the indices: a triangle is visited if its stamp
+     * is the stamp of the walk */
+    private final class TriangleHistory {
+        private final int[] stamps;
+        private final int stamp;
+
+        TriangleHistory() {
+            int[][] threadStamps = walkStamps.get();
+            if (threadStamps[1][0] == Integer.MAX_VALUE) {
+                Arrays.fill(threadStamps[0], 0);
+                threadStamps[1][0] = 0;
+            }
+            stamps = threadStamps[0];
+            stamp = ++threadStamps[1][0];
+        }
+
+        void add(int triangle) {
+            stamps[triangle] = stamp;
+        }
+
+        boolean contains(int triangle) {
+            return stamps[triangle] == stamp;
+        }
+    }
+
+    /**
      * Get coordinates of triangle vertices
      * @param triIndex Index of triangle
      * @return triangle vertices
@@ -1510,16 +1557,96 @@ public class ProfileBuilder {
     }
 
     /**
+     * Build {@link #triangleGrid}, which gives the candidate triangles of {@link #getTriangleIdByCoordinate} without
+     * querying {@link #topoTree}. Each cell lists the triangles whose envelope is closer than the query margin (one
+     * meter) to the cell, in the order of a query of the tree: a query of a small envelope visits the tree in the same
+     * depth-first order, so the triangles of the cell that intersect the query envelope are the result of the query,
+     * in the same order. The cell size is the median size of the triangles, so that a cell lists a few triangles, but
+     * the grid has at most 4 million cells (large DEMs with small triangles).
+     */
+    private void buildTriangleGrid() {
+        Envelope bounds = new Envelope();
+        for (Envelope envelope : triangleEnvelopes) {
+            bounds.expandToInclude(envelope);
+        }
+        if (bounds.isNull()) {
+            return;
+        }
+        // margin above the one meter of the query envelope, so that the cell of a point lists every triangle whose
+        // envelope intersects the query envelope of this point despite the rounding of the envelope bounds
+        double margin = 1.001;
+        bounds.expandBy(margin);
+        double[] sizes = new double[triangleEnvelopes.length];
+        for (int i = 0; i < sizes.length; i++) {
+            sizes[i] = Math.max(triangleEnvelopes[i].getWidth(), triangleEnvelopes[i].getHeight());
+        }
+        Arrays.sort(sizes);
+        triangleGridCellSize = Math.max(Math.max(sizes[sizes.length / 2], 0.5),
+                Math.sqrt(bounds.getArea() / 4e6));
+        triangleGridX = bounds.getMinX();
+        triangleGridY = bounds.getMinY();
+        triangleGridColumns = (int) (bounds.getWidth() / triangleGridCellSize) + 1;
+        triangleGridRows = (int) (bounds.getHeight() / triangleGridCellSize) + 1;
+        int[] counts = new int[triangleGridColumns * triangleGridRows];
+        List<?> treeOrder = topoTree.query(bounds);
+        for (int pass = 0; pass < 2; pass++) {
+            for (Object item : treeOrder) {
+                int triId = (Integer) item;
+                Envelope envelope = triangleEnvelopes[triId];
+                int i0 = triangleGridCell(envelope.getMinX() - margin, triangleGridX, triangleGridColumns);
+                int i1 = triangleGridCell(envelope.getMaxX() + margin, triangleGridX, triangleGridColumns);
+                int j0 = triangleGridCell(envelope.getMinY() - margin, triangleGridY, triangleGridRows);
+                int j1 = triangleGridCell(envelope.getMaxY() + margin, triangleGridY, triangleGridRows);
+                for (int j = j0; j <= j1; j++) {
+                    for (int i = i0; i <= i1; i++) {
+                        int cell = j * triangleGridColumns + i;
+                        if (pass == 0) {
+                            counts[cell]++;
+                        } else {
+                            triangleGrid[cell][counts[cell]++] = triId;
+                        }
+                    }
+                }
+            }
+            if (pass == 0) {
+                triangleGrid = new int[counts.length][];
+                for (int cell = 0; cell < counts.length; cell++) {
+                    triangleGrid[cell] = new int[counts[cell]];
+                }
+                Arrays.fill(counts, 0);
+            }
+        }
+    }
+
+    private int triangleGridCell(double ordinate, double origin, int size) {
+        return Math.max(0, Math.min(size - 1, (int) Math.floor((ordinate - origin) / triangleGridCellSize)));
+    }
+
+    /**
      * Return the triangle id from a point coordinate inside the triangle
      *
      * @param pt Point test
      * @return Triangle Id, Or -1 if no triangle has been found
      */
-
     public int getTriangleIdByCoordinate(Coordinate pt) {
         Envelope ptEnv = new Envelope(pt);
         ptEnv.expandBy(1);
-        var res = topoTree.query(new Envelope(ptEnv));
+        List<?> res;
+        double gx = (pt.x - triangleGridX) / triangleGridCellSize;
+        double gy = (pt.y - triangleGridY) / triangleGridCellSize;
+        if (triangleGrid != null && gx >= 0 && gy >= 0 && gx < triangleGridColumns && gy < triangleGridRows) {
+            // same triangles in the same order as the query of topoTree
+            int[] cellTriangles = triangleGrid[(int) gy * triangleGridColumns + (int) gx];
+            List<Integer> found = new ArrayList<>(cellTriangles.length);
+            for (int triId : cellTriangles) {
+                if (triangleEnvelopes[triId].intersects(ptEnv)) {
+                    found.add(triId);
+                }
+            }
+            res = found;
+        } else {
+            res = topoTree.query(new Envelope(ptEnv));
+        }
         double minDistance = Double.MAX_VALUE;
         int minDistanceTriangle = -1;
         for(Object objInd : res) {
@@ -1648,7 +1775,7 @@ public class ProfileBuilder {
                 return true;
             }
         }
-        HashSet<Integer> navigationHistory = new HashSet<Integer>();
+        TriangleHistory navigationHistory = new TriangleHistory();
         int navigationTri = curTriP1;
         // Add p1 coordinate
         Coordinate[] triangleVertex = getTriangleVertices(curTriP1);
