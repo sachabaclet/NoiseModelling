@@ -355,33 +355,161 @@ public class MirrorReceiversCompute {
      */
     private static BitSet[] computeWallSources(List<Wall> walls, Coordinate receiver,
                                                ReceiverImageVisitor[] sourceVisitors, double maximumDistanceFromWall) {
-        // Cheap pre-test of the distance test, done in the frame of each receiver-source segment
-        double[] directionX = new double[sourceVisitors.length];
-        double[] directionY = new double[sourceVisitors.length];
-        double[] length = new double[sourceVisitors.length];
-        for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
-            Coordinate source = sourceVisitors[idSource].source;
-            length[idSource] = receiver.distance(source);
-            if (length[idSource] > 0) {
-                directionX[idSource] = (source.x - receiver.x) / length[idSource];
-                directionY[idSource] = (source.y - receiver.y) / length[idSource];
-            }
-        }
+        SourceDirections directions = new SourceDirections(receiver, sourceVisitors, maximumDistanceFromWall);
         BitSet[] wallSources = new BitSet[walls.size()];
         for (int idWall = 0; idWall < walls.size(); idWall++) {
-            wallSources[idWall] = new BitSet(sourceVisitors.length);
             LineSegment wallSegment = walls.get(idWall).getLineSegment();
-            for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
-                LineSegment sourceReceiverSegment = sourceVisitors[idSource].sourceReceiverSegment;
-                if (!isFarFromSegment(wallSegment, receiver, directionX[idSource], directionY[idSource],
-                        length[idSource], maximumDistanceFromWall) &&
-                        (isClearlyCloser(wallSegment, sourceReceiverSegment, maximumDistanceFromWall) ||
-                        wallSegment.distance(sourceReceiverSegment) <= maximumDistanceFromWall)) {
-                    wallSources[idWall].set(idSource);
-                }
+            BitSet sources = new BitSet(sourceVisitors.length);
+            wallSources[idWall] = sources;
+            double[] window = directions.getDirectionWindow(wallSegment);
+            if (window == null) {
+                directions.testAllSources(wallSegment, sources);
+            } else {
+                directions.testSourcesInWindow(wallSegment, window[0], window[1], sources);
             }
         }
         return wallSources;
+    }
+
+    /**
+     * The sources of a receiver sorted by their direction from the receiver, so that the distance test of a wall is
+     * done only for the sources whose segment to the receiver can be close enough to the wall.
+     * A wall point at distance r from the receiver is at r |sin(a)| or more from a segment that starts at the
+     * receiver, where a is the angle between the direction of the point and the direction of the segment (at r if a
+     * is greater than 90 degrees). So the segment can be closer than d to the wall only if its direction is in the
+     * angular span of the wall seen from the receiver, widened by asin(d / distance from the receiver to the wall).
+     */
+    private static final class SourceDirections {
+        /** Margin of the angular window, in radians, far above the rounding of atan2 */
+        private static final double ANGLE_MARGIN = 1e-9;
+        final Coordinate receiver;
+        final ReceiverImageVisitor[] sourceVisitors;
+        final double maximumDistanceFromWall;
+        /** Distance limit of the window: the limit of the test plus 1e-6 m, so no source at the limit is missed */
+        final double windowDistance;
+        /** Unit direction from the receiver to each source (0 for a source at the receiver position) */
+        final double[] directionX;
+        final double[] directionY;
+        final double[] length;
+        /** Sources not at the receiver position, sorted by direction angle in [-pi, pi] */
+        final int[] sortedSources;
+        final double[] sortedAngles;
+        /** Sources at the receiver position: they have no direction and are always tested */
+        final int[] centralSources;
+
+        SourceDirections(Coordinate receiver, ReceiverImageVisitor[] sourceVisitors, double maximumDistanceFromWall) {
+            this.receiver = receiver;
+            this.sourceVisitors = sourceVisitors;
+            this.maximumDistanceFromWall = maximumDistanceFromWall;
+            this.windowDistance = maximumDistanceFromWall + 1e-6;
+            int sourceCount = sourceVisitors.length;
+            directionX = new double[sourceCount];
+            directionY = new double[sourceCount];
+            length = new double[sourceCount];
+            double[] angles = new double[sourceCount];
+            Integer[] order = new Integer[sourceCount];
+            int centralCount = 0;
+            for (int idSource = 0; idSource < sourceCount; idSource++) {
+                Coordinate source = sourceVisitors[idSource].source;
+                length[idSource] = receiver.distance(source);
+                if (length[idSource] > 0) {
+                    directionX[idSource] = (source.x - receiver.x) / length[idSource];
+                    directionY[idSource] = (source.y - receiver.y) / length[idSource];
+                } else {
+                    centralCount++;
+                }
+                angles[idSource] = Math.atan2(directionY[idSource], directionX[idSource]);
+                order[idSource] = idSource;
+            }
+            Arrays.sort(order, (a, b) -> Double.compare(angles[a], angles[b]));
+            sortedSources = new int[sourceCount - centralCount];
+            sortedAngles = new double[sourceCount - centralCount];
+            centralSources = new int[centralCount];
+            int directed = 0;
+            int central = 0;
+            for (int idSource : order) {
+                if (length[idSource] > 0) {
+                    sortedAngles[directed] = angles[idSource];
+                    sortedSources[directed++] = idSource;
+                } else {
+                    centralSources[central++] = idSource;
+                }
+            }
+        }
+
+        /**
+         * @return The directions [low, high] (radians, low in [-pi, pi), high may be above pi) of the segments from
+         * the receiver that can be closer to the wall than the distance limit, or null if any direction can
+         */
+        double[] getDirectionWindow(LineSegment wall) {
+            double wallDistance = wall.distance(receiver) * (1 - 1e-12);
+            if (!(wallDistance > windowDistance)) {
+                return null;
+            }
+            double angle0 = Math.atan2(wall.p0.y - receiver.y, wall.p0.x - receiver.x);
+            double angle1 = Math.atan2(wall.p1.y - receiver.y, wall.p1.x - receiver.x);
+            // the wall does not contain the receiver, so its angular span is the arc shorter than pi
+            double span = angle1 - angle0;
+            if (span > Math.PI) {
+                span -= 2 * Math.PI;
+            } else if (span < -Math.PI) {
+                span += 2 * Math.PI;
+            }
+            double widening = Math.asin(windowDistance / wallDistance) + ANGLE_MARGIN;
+            double low = (span >= 0 ? angle0 : angle1) - widening;
+            double high = low + Math.abs(span) + 2 * widening;
+            if (high - low >= 2 * Math.PI) {
+                return null;
+            }
+            if (low < -Math.PI) {
+                low += 2 * Math.PI;
+                high += 2 * Math.PI;
+            }
+            return new double[]{low, high};
+        }
+
+        void testAllSources(LineSegment wall, BitSet sources) {
+            for (int idSource = 0; idSource < sourceVisitors.length; idSource++) {
+                testSource(wall, idSource, sources);
+            }
+        }
+
+        /** Test the sources at the receiver position and the sources whose direction is in [low, high] */
+        void testSourcesInWindow(LineSegment wall, double low, double high, BitSet sources) {
+            for (int idSource : centralSources) {
+                testSource(wall, idSource, sources);
+            }
+            testSourcesBetween(wall, low, Math.min(high, Math.PI), sources);
+            if (high > Math.PI) {
+                // the window goes past pi: its end is near -pi
+                testSourcesBetween(wall, -Math.PI, high - 2 * Math.PI, sources);
+            }
+        }
+
+        private void testSourcesBetween(LineSegment wall, double low, double high, BitSet sources) {
+            int first = Arrays.binarySearch(sortedAngles, low);
+            if (first < 0) {
+                first = -first - 1;
+            }
+            // binarySearch returns any of the equal angles
+            while (first > 0 && sortedAngles[first - 1] >= low) {
+                first--;
+            }
+            for (int k = first; k < sortedAngles.length && sortedAngles[k] <= high; k++) {
+                testSource(wall, sortedSources[k], sources);
+            }
+        }
+
+        /** The distance test of the source visitors, with its cheap pre-test in the frame of the segment */
+        private void testSource(LineSegment wall, int idSource, BitSet sources) {
+            LineSegment sourceReceiverSegment = sourceVisitors[idSource].sourceReceiverSegment;
+            if (!isFarFromSegment(wall, receiver, directionX[idSource], directionY[idSource],
+                    length[idSource], maximumDistanceFromWall) &&
+                    (isClearlyCloser(wall, sourceReceiverSegment, maximumDistanceFromWall) ||
+                    wall.distance(sourceReceiverSegment) <= maximumDistanceFromWall)) {
+                sources.set(idSource);
+            }
+        }
     }
 
     /**
