@@ -82,6 +82,17 @@ public class ProfileBuilder {
     /** RTree with Buildings's walls linestrings, walls linestring, GroundEffect linestrings
      * The object is an integer. It's an index of the array {@link #processedObstructions} */
     public STRtree rtree;
+    /** The nodes under the root of {@link #rtree} in depth-first order: envelope bounds, the item (index of
+     * {@link #processedObstructions}) or -1 for an inner node, the leaf of
+     * an item, and the first node after the subtree */
+    private double[] obstructionMinX;
+    private double[] obstructionMinY;
+    private double[] obstructionMaxX;
+    private double[] obstructionMaxY;
+    private int[] obstructionItem;
+    private ItemBoundable[] obstructionLeaf;
+    private int[] obstructionNext;
+    private int obstructionNodeCount;
     /** RTree with the {@link Wall} segments of buildings and standalone walls only,
      * used by the reflection wall search */
     private STRtree wallsRtree;
@@ -874,6 +885,7 @@ public class ProfileBuilder {
             }
         }
         rtree.build();
+        flattenObstructionTree();
         wallsRtree.build();
         groundEffectsRtree.build();
         // initialize with default frequencies
@@ -1172,12 +1184,12 @@ public class ProfileBuilder {
         // each segment: by first segment whose envelope intersects the object envelope, then in tree order.
         // A single query lists the objects near fullLine (the others cannot intersect it), in tree order.
         List<LineSegment> lines = splitSegment(fullLine.p0, fullLine.p1, maxLineLength);
-        List<ItemBoundable> nearItems = queryNearLine(new Envelope(fullLine.p0, fullLine.p1), fullLine);
-        int[] firstLines = new int[nearItems.size()];
+        int[] nearNodes = queryNearLineNodes(new Envelope(fullLine.p0, fullLine.p1), fullLine);
+        int[] firstLines = new int[nearNodes.length];
         for (int k = 0; k < firstLines.length; k++) {
-            Envelope itemEnvelope = (Envelope) nearItems.get(k).getBounds();
+            int node = nearNodes[k];
             while (firstLines[k] < lines.size()
-                    && !itemEnvelope.intersects(lines.get(firstLines[k]).p0, lines.get(firstLines[k]).p1)) {
+                    && !nodeIntersects(node, lines.get(firstLines[k]).p0, lines.get(firstLines[k]).p1)) {
                 firstLines[k]++;
             }
         }
@@ -1188,11 +1200,10 @@ public class ProfileBuilder {
             for (int j = 0; j < lines.size()
                     && !(profile.hasBuildingIntersection && stopAtObstacleOverSourceReceiver); j++) {
                 for (int k = 0; k < firstLines.length; k++) {
-                    Object result = nearItems.get(k).getItem();
-                    if (firstLines[k] != j || !(result instanceof Integer)) {
+                    if (firstLines[k] != j) {
                         continue;
                     }
-                    int i = (Integer) result;
+                    int i = obstructionItem[nearNodes[k]];
                     LineObstruction facetLine = processedObstructions.get(i);
                     intersector.computeIntersection(fullLine.p0, fullLine.p1, facetLine.line.p0, facetLine.line.p1);
                     Coordinate intersection = intersector.hasIntersection() ? intersector.getIntersection(0) : null;
@@ -1239,42 +1250,124 @@ public class ProfileBuilder {
     }
 
     /**
+     * Copy the nodes under the root of {@link #rtree} into arrays, in depth-first order, so that a query is a loop
+     * over arrays instead of a recursion over the tree objects
+     */
+    private void flattenObstructionTree() {
+        obstructionNodeCount = 0;
+        obstructionMinX = new double[256];
+        obstructionMinY = new double[256];
+        obstructionMaxX = new double[256];
+        obstructionMaxY = new double[256];
+        obstructionItem = new int[256];
+        obstructionLeaf = new ItemBoundable[256];
+        obstructionNext = new int[256];
+        AbstractNode root = rtree.getRoot();
+        if (!root.isEmpty()) {
+            for (Object child : root.getChildBoundables()) {
+                addObstructionNode((Boundable) child);
+            }
+        }
+    }
+
+    private void addObstructionNode(Boundable node) {
+        int id = obstructionNodeCount++;
+        if (id == obstructionItem.length) {
+            obstructionMinX = Arrays.copyOf(obstructionMinX, 2 * id);
+            obstructionMinY = Arrays.copyOf(obstructionMinY, 2 * id);
+            obstructionMaxX = Arrays.copyOf(obstructionMaxX, 2 * id);
+            obstructionMaxY = Arrays.copyOf(obstructionMaxY, 2 * id);
+            obstructionItem = Arrays.copyOf(obstructionItem, 2 * id);
+            obstructionLeaf = Arrays.copyOf(obstructionLeaf, 2 * id);
+            obstructionNext = Arrays.copyOf(obstructionNext, 2 * id);
+        }
+        Envelope bounds = (Envelope) node.getBounds();
+        obstructionMinX[id] = bounds.getMinX();
+        obstructionMinY[id] = bounds.getMinY();
+        obstructionMaxX[id] = bounds.getMaxX();
+        obstructionMaxY[id] = bounds.getMaxY();
+        if (node instanceof ItemBoundable) {
+            obstructionItem[id] = (Integer) ((ItemBoundable) node).getItem();
+            obstructionLeaf[id] = (ItemBoundable) node;
+        } else {
+            obstructionItem[id] = -1;
+            for (Object child : ((AbstractNode) node).getChildBoundables()) {
+                addObstructionNode((Boundable) child);
+            }
+        }
+        obstructionNext[id] = obstructionNodeCount;
+    }
+
+    /** Same test as Envelope.intersects(Coordinate, Coordinate), on the envelope of a node of the flattened tree */
+    private boolean nodeIntersects(int node, Coordinate a, Coordinate b) {
+        double envminx = (a.x < b.x) ? a.x : b.x;
+        if (envminx > obstructionMaxX[node]) return false;
+        double envmaxx = (a.x > b.x) ? a.x : b.x;
+        if (envmaxx < obstructionMinX[node]) return false;
+        double envminy = (a.y < b.y) ? a.y : b.y;
+        if (envminy > obstructionMaxY[node]) return false;
+        double envmaxy = (a.y > b.y) ? a.y : b.y;
+        return !(envmaxy < obstructionMinY[node]);
+    }
+
+    /**
      * Same items, in the same order, as rtree.query(envelope), without the nodes and items whose envelope is farther
      * than one millimeter from the line of the segment, on one side: they cannot intersect the segment.
      */
     public List<ItemBoundable> queryNearLine(Envelope envelope, LineSegment line) {
-        List<ItemBoundable> items = new ArrayList<>();
-        AbstractNode root = rtree.getRoot();
-        if (!root.isEmpty() && ((Envelope) root.getBounds()).intersects(envelope)) {
-            queryNearLine(root, envelope, line, items);
+        int[] nodes = queryNearLineNodes(envelope, line);
+        List<ItemBoundable> items = new ArrayList<>(nodes.length);
+        for (int node : nodes) {
+            items.add(obstructionLeaf[node]);
         }
         return items;
     }
 
-    private static void queryNearLine(AbstractNode node, Envelope envelope, LineSegment line,
-                                      List<ItemBoundable> items) {
-        for (Object child : node.getChildBoundables()) {
-            Envelope bounds = (Envelope) ((Boundable) child).getBounds();
-            if (!bounds.intersects(envelope) || isFarFromLine(bounds, line)) {
+    /**
+     * {@link #queryNearLine(Envelope, LineSegment)} on the flattened tree
+     * @return The leaf nodes of the items, in the order of the query
+     */
+    private int[] queryNearLineNodes(Envelope envelope, LineSegment line) {
+        AbstractNode root = rtree.getRoot();
+        if (root.isEmpty() || !((Envelope) root.getBounds()).intersects(envelope)) {
+            return new int[0];
+        }
+        int[] found = new int[16];
+        int size = 0;
+        int node = 0;
+        while (node < obstructionNodeCount) {
+            if (!nodeIntersects(node, envelope) || isNodeFarFromLine(node, line)) {
+                // skip the subtree
+                node = obstructionNext[node];
                 continue;
             }
-            if (child instanceof AbstractNode) {
-                queryNearLine((AbstractNode) child, envelope, line, items);
-            } else {
-                items.add((ItemBoundable) child);
+            if (obstructionItem[node] >= 0) {
+                if (size == found.length) {
+                    found = Arrays.copyOf(found, 2 * size);
+                }
+                found[size++] = node;
             }
+            // the next node is the first child of an inner node, or the next sibling of a leaf
+            node++;
         }
+        return Arrays.copyOf(found, size);
+    }
+
+    /** Same test as Envelope.intersects(Envelope), on the envelope of a node of the flattened tree */
+    private boolean nodeIntersects(int node, Envelope envelope) {
+        return !(envelope.getMinX() > obstructionMaxX[node] || envelope.getMaxX() < obstructionMinX[node]
+                || envelope.getMinY() > obstructionMaxY[node] || envelope.getMaxY() < obstructionMinY[node]);
     }
 
     /**
-     * @return True if the four corners of the envelope are on the same side of the line of the segment, farther than
-     * one millimeter from it
+     * @return True if the four corners of the envelope of the node are on the same side of the line of the segment,
+     * farther than one millimeter from it
      */
-    private static boolean isFarFromLine(Envelope envelope, LineSegment line) {
-        int side = sideOfLine(line, envelope.getMinX(), envelope.getMinY());
-        return side != 0 && sideOfLine(line, envelope.getMaxX(), envelope.getMinY()) == side
-                && sideOfLine(line, envelope.getMinX(), envelope.getMaxY()) == side
-                && sideOfLine(line, envelope.getMaxX(), envelope.getMaxY()) == side;
+    private boolean isNodeFarFromLine(int node, LineSegment line) {
+        int side = sideOfLine(line, obstructionMinX[node], obstructionMinY[node]);
+        return side != 0 && sideOfLine(line, obstructionMaxX[node], obstructionMinY[node]) == side
+                && sideOfLine(line, obstructionMinX[node], obstructionMaxY[node]) == side
+                && sideOfLine(line, obstructionMaxX[node], obstructionMaxY[node]) == side;
     }
 
     /**
