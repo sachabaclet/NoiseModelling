@@ -38,6 +38,10 @@ public class LayerTinfour implements LayerDelaunay {
     public String dumpFolder = "";
     List<IConstraint> constraints = new ArrayList<>();
     Quadtree ptsIndex = new Quadtree();
+    /** Cell size of {@link #vertexGrid} (m) */
+    private static final double VERTEX_GRID_CELL_SIZE = 1.0;
+    /** The vertices of {@link #ptsIndex} by cell of a regular grid: a cell holds a Vertex or a list of vertices */
+    private final Map<Long, Object> vertexGrid = new HashMap<>();
     private boolean computeNeighbors = false;
     private double maxArea = 0;
     private boolean verbose = true;
@@ -63,29 +67,96 @@ public class LayerTinfour implements LayerDelaunay {
     }
 
     /**
-     *
-     * @param coordinate
-     * @param index
-     * @return
+     * Add a vertex, or reuse the vertex closer than epsilon to the coordinate
+     * @param coordinate Vertex position
+     * @param index Attribute of a new vertex
+     * @return The vertex at this position
      */
     private Vertex addCoordinate(Coordinate coordinate, int index) {
-        final Envelope env = new Envelope(coordinate);
-        env.expandBy(epsilon);
-        List result = ptsIndex.query(env);
-        Vertex found = null;
-        for(Object vertex : result) {
-            if(vertex instanceof Vertex) {
-                if(((Vertex) vertex).getDistance(coordinate.x, coordinate.y) < epsilon) {
-                    found = (Vertex) vertex;
-                    break;
-                }
-            }
-        }
+        Vertex found = mayHaveCloseVertex(coordinate) ? findCloseVertex(coordinate) : null;
         if(found == null) {
             found = new Vertex(coordinate.x, coordinate.y, Double.isNaN(coordinate.z) ? 0 : coordinate.z, index);
             ptsIndex.insert(new Envelope(coordinate),  found);
+            addToVertexGrid(found);
         }
         return found;
+    }
+
+    /**
+     * @return The first vertex of the quadtree query closer than epsilon to the coordinate, or null
+     */
+    private Vertex findCloseVertex(Coordinate coordinate) {
+        final Envelope env = new Envelope(coordinate);
+        env.expandBy(epsilon);
+        List result = ptsIndex.query(env);
+        for(Object vertex : result) {
+            if(vertex instanceof Vertex) {
+                if(((Vertex) vertex).getDistance(coordinate.x, coordinate.y) < epsilon) {
+                    return (Vertex) vertex;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Cheap test before {@link #findCloseVertex(Coordinate)}, which queries the quadtree: most coordinates have no
+     * close vertex, and the vertex grid shows it reading a few cells. When there is a close vertex, the quadtree query
+     * still chooses the vertex, so the vertices are the same.
+     * @return False if no vertex is closer than epsilon to the coordinate (same distance test as findCloseVertex)
+     */
+    @SuppressWarnings("unchecked")
+    private boolean mayHaveCloseVertex(Coordinate coordinate) {
+        if (epsilon > VERTEX_GRID_CELL_SIZE) {
+            return true;
+        }
+        // cells of the envelope widened by 1.5 epsilon, so that the rounding cannot miss a cell
+        double reach = 1.5 * epsilon;
+        long column0 = getVertexGridIndex(coordinate.x - reach);
+        long column1 = getVertexGridIndex(coordinate.x + reach);
+        long row0 = getVertexGridIndex(coordinate.y - reach);
+        long row1 = getVertexGridIndex(coordinate.y + reach);
+        for (long column = column0; column <= column1; column++) {
+            for (long row = row0; row <= row1; row++) {
+                Object cell = vertexGrid.get(getVertexGridKey(column, row));
+                if (cell instanceof Vertex) {
+                    if (((Vertex) cell).getDistance(coordinate.x, coordinate.y) < epsilon) {
+                        return true;
+                    }
+                } else if (cell != null) {
+                    for (Vertex vertex : (List<Vertex>) cell) {
+                        if (vertex.getDistance(coordinate.x, coordinate.y) < epsilon) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void addToVertexGrid(Vertex vertex) {
+        long key = getVertexGridKey(getVertexGridIndex(vertex.getX()), getVertexGridIndex(vertex.getY()));
+        Object cell = vertexGrid.get(key);
+        if (cell == null) {
+            vertexGrid.put(key, vertex);
+        } else if (cell instanceof Vertex) {
+            List<Vertex> cellVertices = new ArrayList<>(2);
+            cellVertices.add((Vertex) cell);
+            cellVertices.add(vertex);
+            vertexGrid.put(key, cellVertices);
+        } else {
+            ((List<Vertex>) cell).add(vertex);
+        }
+    }
+
+    private static long getVertexGridIndex(double ordinate) {
+        return (long) Math.floor(ordinate / VERTEX_GRID_CELL_SIZE);
+    }
+
+    private static long getVertexGridKey(long column, long row) {
+        return (column << 32) ^ (row & 0xFFFFFFFFL);
     }
 
 
