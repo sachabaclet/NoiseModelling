@@ -47,6 +47,31 @@ public class LayerTinfourTest {
         assertEquals(8, triangleList.size());
     }
 
+    /**
+     * The vertices closer than the merge distance (1 mm) are merged into the first one, also on both sides of a cell
+     * of the vertex grid of LayerTinfour, the others are kept
+     */
+    @Test
+    public void testCloseVerticesMerged() throws LayerDelaunayError {
+        LayerTinfour layerTinfour = new LayerTinfour();
+        layerTinfour.addVertex(new Coordinate(0, 0, 0));
+        layerTinfour.addVertex(new Coordinate(100, 0, 0));
+        layerTinfour.addVertex(new Coordinate(100, 100, 0));
+        layerTinfour.addVertex(new Coordinate(0, 100, 0));
+        // 0.9 mm apart, on both sides of x = 50 m: merged
+        layerTinfour.addVertex(new Coordinate(49.99955, 50, 1));
+        layerTinfour.addVertex(new Coordinate(50.00045, 50, 2));
+        // 1.1 mm apart: kept
+        layerTinfour.addVertex(new Coordinate(30, 30, 0));
+        layerTinfour.addVertex(new Coordinate(30.0011, 30, 0));
+        layerTinfour.processDelaunay();
+
+        List<Coordinate> vertices = layerTinfour.getVertices();
+        assertEquals(7, vertices.size());
+        assertTrue(vertices.contains(new Coordinate(49.99955, 50)));
+        assertTrue(vertices.contains(new Coordinate(30.0011, 30)));
+    }
+
     @Test
     public void testPolygonDelaunay1() throws LayerDelaunayError {
         LayerTinfour layerTinfour = new LayerTinfour();
